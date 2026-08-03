@@ -2,13 +2,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from src.flow.flow import Flow, NodeABC
+from src.flow.flow import Flow
+from src.config.config import FlowSettings
 from src.flow.types import (
     BasicMessage,
     ConversationState,
     NodeContext,
     NodeInput,
     NodeOutput,
+    NodeRunResult,
+    NodeABC,
 )
 
 
@@ -16,7 +19,7 @@ from src.flow.types import (
 class ConversationOrchestratorNode(NodeABC):
     name: str = "conversation_orchestrator"
 
-    def run(self, input: NodeInput, context: NodeContext) -> NodeOutput:
+    def run_node(self, input: NodeInput, context: NodeContext) -> NodeRunResult:
         logger = context.logger
         if logger is not None:
             logger.info("Running node=%s conversation_id=%s", self.name, input.conversation_id)
@@ -41,17 +44,24 @@ class ConversationOrchestratorNode(NodeABC):
             }
         )
 
-        return NodeOutput(
-            output_messages=[assistant_message],
-            next_node=None,
-            updated_state=next_state,
-            should_persist=True,
-            is_terminal=True,
+        return NodeRunResult(
+            output=NodeOutput(
+                output_messages=[assistant_message],
+                next_node=None,
+                updated_state=next_state,
+                should_persist=True,
+                is_terminal=True,
+            ),
+            analytics_params={
+                "node": self.name,
+                "message_count": 1,
+                "cost": 0.0,
+            },
         )
 
 
-def build_demo_flow() -> Flow:
-    flow = Flow(entry_node="conversation_orchestrator")
+def build_demo_flow(settings: FlowSettings | None = None) -> Flow:
+    flow = Flow(entry_node="conversation_orchestrator", settings=settings or FlowSettings())
     flow.register_node(ConversationOrchestratorNode())
     return flow
 

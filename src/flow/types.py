@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
+from functools import cached_property
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
@@ -80,4 +82,43 @@ class FlowRequest(BaseModel):
 
 class FlowResponse(BaseModel):
     result: NodeOutput
+
+
+class NodeRunResult(BaseModel):
+    output: NodeOutput
+    analytics_params: dict[str, Any] = Field(default_factory=dict)
+
+
+class FlowStepResult(BaseModel):
+    node_name: str
+    started_at: datetime
+    finished_at: datetime
+    duration_ms: float
+    output: NodeOutput
+    analytics_params: dict[str, Any] = Field(default_factory=dict)
+    cost: float | None = None
+
+
+class FlowRunResult(BaseModel):
+    result: NodeOutput
+    started_at: datetime
+    finished_at: datetime
+    duration_ms: float
+    total_cost: float | None = None
+    steps: list[FlowStepResult] = Field(default_factory=list)
+
+
+class NodeABC(ABC):
+    name: str
+
+    @cached_property
+    def cache_key(self) -> str:
+        return f"{self.__class__.__module__}.{self.__class__.__qualname__}:{self.name}"
+
+    def run(self, input: NodeInput, context: NodeContext) -> NodeRunResult:
+        return self.run_node(input, context)
+
+    @abstractmethod
+    def run_node(self, input: NodeInput, context: NodeContext) -> NodeRunResult:
+        raise NotImplementedError
     

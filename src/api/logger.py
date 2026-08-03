@@ -1,8 +1,8 @@
 import logging
 
 
-def configure_logger(level: int = logging.INFO) -> logging.Logger:
-    logger = logging.getLogger("finagent.api")
+def configure_logger(name: str = "finagent", level: int = logging.INFO) -> logging.Logger:
+    logger = logging.getLogger(name)
     if logger.handlers:
         return logger
 

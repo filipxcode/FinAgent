@@ -1,8 +1,33 @@
 from functools import lru_cache
+from typing import Literal
 from urllib.parse import quote_plus
 
-from pydantic import Field
+from pydantic import BaseModel, Field
+from pydantic_ai import Agent
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class LoggingSettings(BaseSettings):
+    level: str = "INFO"
+    format: str = "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
+
+
+class FlowSettings(BaseSettings):
+    max_steps: int = 32
+    retry_max_attempts: int = 3
+    retry_delay_seconds: float = 0.0
+
+
+class AgentSettings(BaseModel):
+    provider: Literal["openai"] = "openai"
+    name: str = "orchestrator"
+    model: str = "gpt-4.1-mini"
+    temperature: float = 0.0
+    max_tokens: int | None = None
+
+    @property
+    def model_id(self) -> str:
+        return f"{self.provider}:{self.model}"
 
 
 class DatabaseSettings(BaseSettings):
@@ -30,7 +55,34 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    logging_settings: LoggingSettings = Field(default_factory=LoggingSettings)
+    flow_settings: FlowSettings = Field(default_factory=FlowSettings)
+    agent_settings: dict[str, AgentSettings] = Field(
+        default_factory=lambda: {
+            "orchestrator": AgentSettings(
+                provider="openai",
+                name="orchestrator",
+                model="gpt-4.1-mini",
+            ),
+        }
+    )
     db_settings: DatabaseSettings = Field(default_factory=DatabaseSettings)
+
+    def get_agent_settings(self, agent_key: str) -> AgentSettings:
+        try:
+            return self.agent_settings[agent_key]
+        except KeyError as exc:
+            available = ", ".join(sorted(self.agent_settings)) or "<none>"
+            raise KeyError(
+                f"Unknown agent_settings key: {agent_key}. Available keys: {available}"
+            ) from exc
+
+    def get_agent(self, agent_key: str) -> Agent:
+        agent_settings = self.get_agent_settings(agent_key)
+        return Agent(
+            model=agent_settings.model_id,
+            name=agent_settings.name,
+        )
 
 
 @lru_cache

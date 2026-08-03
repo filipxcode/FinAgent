@@ -5,8 +5,8 @@ from uuid import uuid4
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI
 
-from src.api.deps import get_auth_token, get_postgres_client, get_service
 from src.api.logger import configure_logger
+from src.api.deps import get_auth_token, get_postgres_client, get_service
 from src.api.types import (
     ConversationIdFieldT,
     ConversationRequestInput,
@@ -14,7 +14,7 @@ from src.api.types import (
 )
 from src.db.postgres import ConversationService
 
-logger = configure_logger()
+logger = configure_logger("finagent.api")
 
 
 @asynccontextmanager
