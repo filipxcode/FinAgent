@@ -7,12 +7,13 @@ from enum import StrEnum
 from inspect import cleandoc
 from typing import Annotated, Any
 
-import httpx
 from pydantic import BaseModel, Field
 from pydantic_ai import RunContext
 from tavily import AsyncTavilyClient
 
 from src.config.config import get_settings
+from src.flow.agents.http import get_json
+from src.flow.agents.prompt import current_date
 from src.flow.types import (
     BasicMessage,
     LanguageEnum,
@@ -68,11 +69,6 @@ class TavilySearchResponse(BaseModel):
     answer: str | None = None
     results: list[TavilyResult] = Field(default_factory=list)
     error: str | None = None
-
-
-# --- alternative.me (https://alternative.me/crypto/api/) ----------------------
-# No API key, 60 req/min, data refreshed every 5 min. Every monetary figure we
-# request is denominated in USD, so the `quotes` envelope is flattened away.
 
 
 class AltMeSort(StrEnum):
@@ -163,27 +159,6 @@ def _parse_coin(raw: dict[str, Any]) -> CoinTicker:
         last_updated=raw.get("last_updated"),
     )
 
-
-
-async def get_json(
-    url: str,
-    params: dict[str, Any] | None = None,
-    headers: dict[str, str] | None = None,
-    timeout: float = 20.0,
-) -> tuple[Any | None, str | None]:
-    """ 
-    GET helper for api data gathering
-    """
-    try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.get(url, params=params, headers=headers)
-            response.raise_for_status()
-            return response.json(), None
-    except Exception as exc:
-        logger.exception("HTTP GET failed url=%s params=%s", url, params)
-        return None, f"{httpx.URL(url).host} request error: {exc}"
-
-
 @dataclass
 class ReseacherDeps:
     messages: list[BasicMessage]
@@ -228,7 +203,8 @@ async def get_agent_instructions(ctx: RunContext[ReseacherDeps]) -> str:
       actually retrieved. Put every URL / reference you relied on into 'sources'.
     - Be precise and neutral. Report figures with their context (date, source).
     - Write the 'report' in {language} (matching the user's language).
-
+    - Current date is {current_date}
+    
     # CONTEXT
     Conversation so far (for background only — the task below is authoritative):
     ```python
@@ -237,12 +213,13 @@ async def get_agent_instructions(ctx: RunContext[ReseacherDeps]) -> str:
     """
     prompt = cleandoc(prompt)
     return prompt.format(
+        current_date=current_date(),
         language=ctx.deps.language.value,
         messages=[m.model_dump() for m in ctx.deps.messages],
     )
 
 
-@agent.tool
+@agent.tool_plain
 async def tavily_search(query: str, max_results: int = 5) -> TavilySearchResponse:
     R"""Search the public web for fresh information via the Tavily API.
 
@@ -287,7 +264,7 @@ async def tavily_search(query: str, max_results: int = 5) -> TavilySearchRespons
     return TavilySearchResponse(query=query, answer=answer, results=results)
 
 
-@agent.tool
+@agent.tool_plain
 async def base_crypto_tool(
     top_k_crypto: Annotated[int, Field(ge=1, le=50)] = 5,
     sort: AltMeSort = AltMeSort.RANK,
@@ -339,7 +316,7 @@ async def base_crypto_tool(
     )
 
 
-@agent.tool
+@agent.tool_plain
 async def exact_crypto_tool(website_slug: str) -> CoinDetailResponse:
     R"""Get the current USD figures for one specific coin.
 
@@ -359,14 +336,13 @@ async def exact_crypto_tool(website_slug: str) -> CoinDetailResponse:
     if error:
         return CoinDetailResponse(error=error)
 
-    # /v2/ticker/{slug}/ nests the coin under its numeric id.
     entries = list((data or {}).get("data", {}).values())
     if not entries:
         return CoinDetailResponse(error=f"no coin found for slug '{website_slug}'")
     return CoinDetailResponse(coin=_parse_coin(entries[0]))
 
 
-@agent.tool
+@agent.tool_plain
 async def fear_greed_index_tool(
     limit: Annotated[int, Field(ge=1, le=365)] = 1,
 ) -> FearGreedResponse:
