@@ -1,5 +1,5 @@
 from functools import lru_cache
-from typing import Literal
+from typing import Any, Literal
 from urllib.parse import quote_plus
 
 from pydantic import BaseModel, Field
@@ -16,6 +16,22 @@ class FlowSettings(BaseSettings):
     max_steps: int = 32
     retry_max_attempts: int = 3
     retry_delay_seconds: float = 0.0
+
+
+class AgentUtilsSettings(BaseSettings):
+    """External API keys / config used by agent tools."""
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    tavily_api_key: str | None = None
+    etherscan_api_key: str | None = None
+
+    # Host root; tools append the version segment ("/v2/ticker/", "/fng/").
+    alternativeme_url: str = "https://api.alternative.me"
 
 
 class AgentSettings(BaseModel):
@@ -57,11 +73,27 @@ class Settings(BaseSettings):
 
     logging_settings: LoggingSettings = Field(default_factory=LoggingSettings)
     flow_settings: FlowSettings = Field(default_factory=FlowSettings)
+    agent_utils_settings: AgentUtilsSettings = Field(default_factory=AgentUtilsSettings)
     agent_settings: dict[str, AgentSettings] = Field(
         default_factory=lambda: {
+            "precheck": AgentSettings(
+                provider="openai",
+                name="precheck",
+                model="gpt-4.1-mini",
+            ),
             "orchestrator": AgentSettings(
                 provider="openai",
                 name="orchestrator",
+                model="gpt-4.1-mini",
+            ),
+            "reseacher": AgentSettings(
+                provider="openai",
+                name="reseacher",
+                model="gpt-4.1-mini",
+            ),
+            "whaletracker": AgentSettings(
+                provider="openai",
+                name="whaletracker",
                 model="gpt-4.1-mini",
             ),
         }
@@ -77,11 +109,19 @@ class Settings(BaseSettings):
                 f"Unknown agent_settings key: {agent_key}. Available keys: {available}"
             ) from exc
 
-    def get_agent(self, agent_key: str) -> Agent:
+    def get_agent(
+        self,
+        agent_key: str,
+        *,
+        deps_type: type[Any] | None = None,
+        output_type: type[Any] | None = None,
+    ) -> Agent[Any, Any]:
         agent_settings = self.get_agent_settings(agent_key)
         return Agent(
             model=agent_settings.model_id,
             name=agent_settings.name,
+            deps_type=deps_type,
+            output_type=output_type,
         )
 
 
