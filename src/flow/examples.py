@@ -2,28 +2,25 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from src.flow.flow import Flow
 from src.config.config import FlowSettings
+from src.flow.agents.precheck import PrecheckNode
+from src.flow.flow import Flow
 from src.flow.types import (
     BasicMessage,
     ConversationState,
+    NodeABC,
     NodeContext,
     NodeInput,
     NodeOutput,
     NodeRunResult,
-    NodeABC,
 )
 
 
 @dataclass(kw_only=True)
-class ConversationOrchestratorNode(NodeABC):
-    name: str = "conversation_orchestrator"
+class ConversationOrchestratorNode(NodeABC[NodeInput, NodeContext, NodeOutput]):
+    name: str = "orchestrator_node"
 
-    def run_node(self, input: NodeInput, context: NodeContext) -> NodeRunResult:
-        logger = context.logger
-        if logger is not None:
-            logger.info("Running node=%s conversation_id=%s", self.name, input.conversation_id)
-
+    async def run_node(self, input: NodeInput, context: NodeContext) -> NodeRunResult[NodeOutput]:
         user_text = input.current_message.content.strip().lower()
 
         if "help" in user_text or user_text.endswith("?"):
@@ -37,33 +34,18 @@ class ConversationOrchestratorNode(NodeABC):
             content=reply_text,
         )
 
-        next_state = input.state.model_copy(
-            update={
-                "status": "completed",
-                "active_node": None,
-            }
-        )
-
         return NodeRunResult(
-            output=NodeOutput(
-                output_messages=[assistant_message],
-                next_node=None,
-                updated_state=next_state,
-                should_persist=True,
-                is_terminal=True,
-            ),
-            analytics_params={
-                "node": self.name,
-                "message_count": 1,
-                "cost": 0.0,
-            },
+            output=NodeOutput(output_messages=[assistant_message], next_node=None),
+            analytics_params={"node": self.name, "message_count": 1, "cost": 0.0},
         )
 
 
 def build_demo_flow(settings: FlowSettings | None = None) -> Flow:
-    flow = Flow(entry_node="conversation_orchestrator", settings=settings or FlowSettings())
-    flow.register_node(ConversationOrchestratorNode())
-    return flow
+    return Flow(
+        precheck=PrecheckNode(),
+        orchestrator=ConversationOrchestratorNode(),
+        settings=settings or FlowSettings(),
+    )
 
 
 def build_demo_input(conversation_id: str, text: str) -> NodeInput:
@@ -73,7 +55,7 @@ def build_demo_input(conversation_id: str, text: str) -> NodeInput:
         content=text,
     )
 
-    state = ConversationState(conversation_id=conversation_id, status="running", active_node="conversation_orchestrator")
+    state = ConversationState(conversation_id=conversation_id)
 
     return NodeInput(
         conversation_id=conversation_id,

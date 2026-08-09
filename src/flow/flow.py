@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import logging
+from asyncio import sleep
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from time import sleep
+from datetime import UTC, datetime
+from typing import Any, cast
 
 from src.config.config import FlowSettings
+from src.flow.agents.orchestrator import OrchestratorNode
+from src.flow.agents.precheck import PrecheckNode, PrecheckOutput
 from src.flow.types import (
     FlowRunResult,
     FlowStepResult,
@@ -12,126 +16,166 @@ from src.flow.types import (
     NodeContext,
     NodeInput,
     NodeOutput,
+    PrecheckStatus,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(kw_only=True)
 class Flow:
-    nodes: dict[str, NodeABC] = field(default_factory=dict)
-    entry_node: str | None = None
     settings: FlowSettings = field(default_factory=FlowSettings)
+    precheck: PrecheckNode = field(default_factory=PrecheckNode)
+    orchestrator: OrchestratorNode = field(default_factory=OrchestratorNode)
 
-    def register_node(self, node: NodeABC) -> None:
-        self.nodes[node.name] = node
-
-    def get_node(self, node_name: str) -> NodeABC:
-        try:
-            return self.nodes[node_name]
-        except KeyError as exc:
-            raise KeyError(f"Unknown node: {node_name}") from exc
-
-    def run(self, input: NodeInput, context: NodeContext) -> FlowStepResult:
-        node_name = input.state.active_node or self.entry_node
-        if node_name is None:
-            raise ValueError("Flow entry node is not set and state.active_node is empty.")
-
-        started_at = datetime.now(timezone.utc)
-        node = self.get_node(node_name)
-        node_result = node.run(input, context)
-        finished_at = datetime.now(timezone.utc)
-
-        analytics_params = node_result.analytics_params
-        cost = analytics_params.get("cost")
-        if cost is not None:
-            cost = float(cost)
-
-        output = node_result.output
-        next_state = output.updated_state or input.state
-        if output.next_node is not None:
-            next_state = next_state.model_copy(update={"active_node": output.next_node})
-
-        updated_output = output.model_copy(update={"updated_state": next_state})
-        duration_ms = (finished_at - started_at).total_seconds() * 1000
-
-        return FlowStepResult(
-            node_name=node_name,
-            started_at=started_at,
-            finished_at=finished_at,
-            duration_ms=duration_ms,
-            output=updated_output,
-            analytics_params=analytics_params,
-            cost=cost,
-        )
-
-    def _run_with_retry(self, input: NodeInput, context: NodeContext) -> FlowStepResult:
-        last_error: Exception | None = None
-
-        for attempt in range(1, self.settings.retry_max_attempts + 1):
-            try:
-                return self.run(input, context)
-            except Exception as exc:
-                last_error = exc
-                if attempt >= self.settings.retry_max_attempts:
-                    break
-                if self.settings.retry_delay_seconds > 0:
-                    sleep(self.settings.retry_delay_seconds)
-
-        assert last_error is not None
-        raise last_error
-
-    def run_flow(
+    async def run_flow(
         self,
         input: NodeInput,
         context: NodeContext,
-        *,
-        max_steps: int | None = None,
     ) -> FlowRunResult:
-        current_input = input
+        """Run the agents in order, branching on what precheck decides.
+
+        precheck -> small_talk / not_allowed  => stop here
+                 -> allowed                    => orchestrator
+        """
         steps: list[FlowStepResult] = []
-        started_at = datetime.now(timezone.utc)
-        step_limit = max_steps if max_steps is not None else self.settings.max_steps
+        started_at = datetime.now(UTC)
+        current = input
+        
+        step, current = await self._step(self.precheck, current, context, steps)
+        if step.status == "failed":
+            return self._build_result(steps, started_at, "failed", input)
 
-        for _ in range(step_limit):
-            step_result = self._run_with_retry(current_input, context)
-            steps.append(step_result)
+        precheck_output = cast(PrecheckOutput, step.output)
+        if precheck_output.status in (PrecheckStatus.SMALL_TALK, PrecheckStatus.NOT_ALLOWED):
+            return self._build_result(steps, started_at, "completed", input)
 
-            output = step_result.output
-            current_state = output.updated_state or current_input.state
-            next_node = output.next_node
+        step, current = await self._step(self.orchestrator, current, context, steps)
+        if step.status == "failed":
+            return self._build_result(steps, started_at, "failed", input)
 
-            if output.output_messages:
-                current_message = output.output_messages[-1]
-                message_history = [
-                    *current_input.message_history,
-                    *output.output_messages,
-                ]
-            else:
-                current_message = current_input.current_message
-                message_history = current_input.message_history
+        return self._build_result(steps, started_at, "completed", input)
 
-            current_input = current_input.model_copy(
-                update={
-                    "current_message": current_message,
-                    "message_history": message_history,
-                    "state": current_state,
-                }
-            )
+    async def _step(
+        self,
+        node: NodeABC[Any, Any, Any],
+        input: NodeInput,
+        context: NodeContext,
+        steps: list[FlowStepResult],
+    ) -> tuple[FlowStepResult, NodeInput]:
+        """Run one node, record its step, and thread the state forward."""
+        step = await self._run_with_retry(node, input, context)
+        steps.append(step)
+        next_input = input.model_copy(update={"state": step.output.updated_state})
+        return step, next_input
 
-            if output.is_terminal or next_node is None:
-                finished_at = datetime.now(timezone.utc)
-                duration_ms = (finished_at - started_at).total_seconds() * 1000
-                total_cost = sum(
-                    step.cost for step in steps if step.cost is not None
-                ) or None
-                return FlowRunResult(
-                    result=output,
-                    started_at=started_at,
-                    finished_at=finished_at,
-                    duration_ms=duration_ms,
-                    total_cost=total_cost,
-                    steps=steps,
+    def _build_result(
+        self,
+        steps: list[FlowStepResult],
+        started_at: datetime,
+        final_status: str,
+        input: NodeInput,
+    ) -> FlowRunResult:
+        finished_at = datetime.now(UTC)
+        duration_ms = (finished_at - started_at).total_seconds() * 1000
+        total_cost = sum(s.cost for s in steps if s.cost is not None) or None
+
+        last_state = steps[-1].output.updated_state if steps else input.state
+        final_state = (last_state or input.state).model_copy(
+            update={"status": final_status, "active_node": None}
+        )
+        result = (
+            steps[-1].output.model_copy(update={"updated_state": final_state})
+            if steps
+            else NodeOutput(updated_state=final_state)
+        )
+
+        return FlowRunResult(
+            result=result,
+            started_at=started_at,
+            finished_at=finished_at,
+            duration_ms=duration_ms,
+            total_cost=total_cost,
+            steps=steps,
+        )
+
+    async def _run_with_retry(
+        self,
+        node: NodeABC[Any, Any, Any],
+        input: NodeInput,
+        context: NodeContext,
+    ) -> FlowStepResult:
+        """Run a node with retries and record its lifecycle (running -> finished/failed).
+
+        The node itself never touches ``status``/``active_node`` — that bookkeeping
+        lives here so every node stays free of flow plumbing.
+        """
+        run_logger = context.logger or logger
+        last_error: Exception | None = None
+
+        running_state = input.state.model_copy(
+            update={"status": "running", "active_node": node.name}
+        )
+        step_input = input.model_copy(update={"state": running_state})
+
+        for attempt in range(1, self.settings.retry_max_attempts + 1):
+            started_at = datetime.now(UTC)
+            try:
+                node_result = await node.run(step_input, context)
+                finished_at = datetime.now(UTC)
+
+                cost = node_result.analytics_params.get("cost")
+                cost = float(cost) if cost is not None else None
+
+                output = node_result.output
+                # Node may have changed business fields; keep the flow-owned status.
+                business_state = output.updated_state or running_state
+                next_state = business_state.model_copy(
+                    update={"status": "running", "active_node": node.name}
                 )
 
-        raise RuntimeError(
-            f"Flow exceeded max_steps={step_limit}. Check node transitions for loops."
-        )
+                return FlowStepResult(
+                    node_name=node.name,
+                    status="finished",
+                    started_at=started_at,
+                    finished_at=finished_at,
+                    duration_ms=(finished_at - started_at).total_seconds() * 1000,
+                    output=output.model_copy(update={"updated_state": next_state}),
+                    analytics_params=node_result.analytics_params,
+                    cost=cost,
+                )
+            except Exception as exc:
+                last_error = exc
+                run_logger.exception(
+                    "Node run failed node=%s attempt=%s/%s conversation_id=%s",
+                    node.name,
+                    attempt,
+                    self.settings.retry_max_attempts,
+                    step_input.conversation_id,
+                )
+                if attempt < self.settings.retry_max_attempts:
+                    if self.settings.retry_delay_seconds > 0:
+                        await sleep(self.settings.retry_delay_seconds)
+                    continue
+
+                finished_at = datetime.now(UTC)
+                failed_state = running_state.model_copy(
+                    update={"status": "failed", "active_node": None}
+                )
+                return FlowStepResult(
+                    node_name=node.name,
+                    status="failed",
+                    started_at=started_at,
+                    finished_at=finished_at,
+                    duration_ms=(finished_at - started_at).total_seconds() * 1000,
+                    output=NodeOutput(
+                        updated_state=failed_state,
+                        next_node=None,
+                        fallback_reason=str(exc),
+                    ),
+                    analytics_params={"node": node.name, "cost": 0.0},
+                    error=str(exc),
+                )
+
+        assert last_error is not None
+        raise last_error

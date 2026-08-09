@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from functools import cached_property
 from datetime import datetime
+from enum import Enum
+from functools import cached_property
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
@@ -15,6 +16,20 @@ type MessageContentT = Annotated[
 MessageRoleT = Literal["user", "assistant", "system"]
 
 ConversationStatusT = Literal["idle", "running", "waiting", "completed", "failed"]
+
+StepStatusT = Literal["finished", "failed"]
+
+
+class PrecheckStatus(str, Enum):
+    ALLOWED = "allowed"
+    NOT_ALLOWED = "not_allowed"
+    SMALL_TALK = "small_talk"
+
+
+class LanguageEnum(str, Enum):
+    ENG = "eng"
+    PL = "pl"
+
 
 
 class BasicMessage(BaseModel):
@@ -36,13 +51,12 @@ class ConversationState(BaseModel):
 
 
 class NodeInput(BaseModel):
-    conversation_id: str
+    conversation_id: str | None
     current_message: BasicMessage
     message_history: list[BasicMessage] = Field(default_factory=list)
     state: ConversationState
     request_id: str | None = None
     trace_id: str | None = None
-    
 
 
 class NodeContext(BaseModel):
@@ -69,8 +83,6 @@ class NodeOutput(BaseModel):
     output_messages: list[BasicMessage] = Field(default_factory=list)
     next_node: str | None = None
     updated_state: ConversationState | None = None
-    should_persist: bool = True
-    is_terminal: bool = False
     fallback_reason: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -84,19 +96,21 @@ class FlowResponse(BaseModel):
     result: NodeOutput
 
 
-class NodeRunResult(BaseModel):
-    output: NodeOutput
+class NodeRunResult[TNodeOutput: NodeOutput](BaseModel):
+    output: TNodeOutput
     analytics_params: dict[str, Any] = Field(default_factory=dict)
 
 
 class FlowStepResult(BaseModel):
     node_name: str
+    status: StepStatusT
     started_at: datetime
     finished_at: datetime
     duration_ms: float
     output: NodeOutput
     analytics_params: dict[str, Any] = Field(default_factory=dict)
     cost: float | None = None
+    error: str | None = None
 
 
 class FlowRunResult(BaseModel):
@@ -108,17 +122,17 @@ class FlowRunResult(BaseModel):
     steps: list[FlowStepResult] = Field(default_factory=list)
 
 
-class NodeABC(ABC):
+class NodeABC[TNodeInput: NodeInput, TNodeContext: NodeContext, TNodeOutput: NodeOutput](ABC):
     name: str
 
     @cached_property
     def cache_key(self) -> str:
         return f"{self.__class__.__module__}.{self.__class__.__qualname__}:{self.name}"
 
-    def run(self, input: NodeInput, context: NodeContext) -> NodeRunResult:
-        return self.run_node(input, context)
+    async def run(self, input: TNodeInput, context: TNodeContext) -> NodeRunResult[TNodeOutput]:
+        return await self.run_node(input, context)
 
     @abstractmethod
-    def run_node(self, input: NodeInput, context: NodeContext) -> NodeRunResult:
+    async def run_node(self, input: TNodeInput, context: TNodeContext) -> NodeRunResult[TNodeOutput]:
         raise NotImplementedError
     
