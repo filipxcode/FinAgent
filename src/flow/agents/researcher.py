@@ -14,6 +14,7 @@ from tavily import AsyncTavilyClient
 from src.config.config import get_settings
 from src.flow.agents.http import get_json
 from src.flow.agents.prompt import current_date
+from src.flow.agents.usage import run_cost
 from src.flow.types import (
     BasicMessage,
     LanguageEnum,
@@ -36,26 +37,54 @@ class ResearcherContext(NodeContext):
     pass
 
 
-class ResearchReport(BaseModel):
-    """Structured answer the LLM must produce for a research task."""
+class ResearcherAgentOutput(BaseModel):
+    """Structured answer the LLM must produce for one delegated research task."""
 
-    report: str = Field(description="Concise, factual synthesis that answers the task.")
+    reasoning: str = Field(
+        description=cleandoc("""
+            Brief explanation of how you got to the report: which tools you chose
+            and why, how you reconciled figures that disagreed, and what drove the
+            confidence you gave. 2-4 sentences, for developers reading traces - it
+            never reaches the end user.
+        """),
+    )
+    report: str = Field(
+        description=cleandoc("""
+            Concise, factual synthesis that answers the task. Give every figure
+            with its context (date and source) and keep monetary amounts in USD.
+            State observations before any interpretation, and name the gap
+            outright when the evidence does not settle the question.
+        """),
+    )
     sources: list[str] = Field(
         default_factory=list,
-        description="URLs / references the report is based on.",
+        description=cleandoc("""
+            URLs and references the report actually rests on - only sources you
+            really retrieved, never reconstructed ones. Data read from the crypto
+            tools can be cited by tool name.
+        """),
     )
     confidence: float = Field(
         default=0.5,
         ge=0.0,
         le=1.0,
-        description="How well the gathered evidence supports the report (0-1).",
+        description=cleandoc("""
+            How well the gathered evidence supports the report, 0-1. Above 0.8 the
+            figures came straight from a working data source; around 0.5 they are
+            partial or second-hand; below 0.3 a source failed or the evidence is
+            too thin to lean on, and the Orchestrator will say so to the user.
+        """),
     )
 
 
-class ResearcherOutput(NodeOutput):
+class ResearcherNodeOutput(NodeOutput):
+    """Flow-level result of one research task, mirroring the agent output."""
+
+    reasoning: str = ""
     report: str = ""
     sources: list[str] = Field(default_factory=list)
     confidence: float = 0.5
+
 
 class TavilyResult(BaseModel):
     title: str
@@ -160,21 +189,23 @@ def _parse_coin(raw: dict[str, Any]) -> CoinTicker:
     )
 
 @dataclass
-class ReseacherDeps:
-    messages: list[BasicMessage]
+class ResearcherDeps:
+    """Runtime parameters for one delegated research task."""
+
     language: LanguageEnum = LanguageEnum.ENG
+    background: str | None = None
 
 
-RESEARCHER_AGENT_KEY = "reseacher"
+RESEARCHER_AGENT_KEY = "researcher"
 agent = get_settings().get_agent(
     RESEARCHER_AGENT_KEY,
-    deps_type=ReseacherDeps,
-    output_type=ResearchReport,
+    deps_type=ResearcherDeps,
+    output_type=ResearcherAgentOutput,
 )
 
 
 @agent.instructions
-async def get_agent_instructions(ctx: RunContext[ReseacherDeps]) -> str:
+async def get_agent_instructions(ctx: RunContext[ResearcherDeps]) -> str:
     prompt = """
     # ROLE
     You are the Research Agent inside a specialized Cryptocurrency & Financial
@@ -204,19 +235,22 @@ async def get_agent_instructions(ctx: RunContext[ReseacherDeps]) -> str:
     - Be precise and neutral. Report figures with their context (date, source).
     - Write the 'report' in {language} (matching the user's language).
     - Current date is {current_date}
-    
-    # CONTEXT
-    Conversation so far (for background only — the task below is authoritative):
-    ```python
-    {messages}
-    ```
     """
-    prompt = cleandoc(prompt)
-    return prompt.format(
+    prompt = cleandoc(prompt).format(
         current_date=current_date(),
         language=ctx.deps.language.value,
-        messages=[m.model_dump() for m in ctx.deps.messages],
     )
+    if ctx.deps.background:
+        prompt += cleandoc(
+            """
+
+            # BACKGROUND
+            Context the Orchestrator judged relevant. The task itself stays
+            authoritative — use this only to disambiguate it:
+            {background}
+            """
+        ).format(background=ctx.deps.background)
+    return prompt
 
 
 @agent.tool_plain
@@ -366,15 +400,15 @@ async def fear_greed_index_tool(
 
 
 @dataclass(kw_only=True)
-class ResearcherNode(NodeABC[ResearcherInput, ResearcherContext, ResearcherOutput]):
+class ResearcherNode(NodeABC[ResearcherInput, ResearcherContext, ResearcherNodeOutput]):
     name: str = "researcher_node"
 
     async def run_node(
         self,
         input: ResearcherInput,
         context: ResearcherContext,
-    ) -> NodeRunResult[ResearcherOutput]:
-        deps = ReseacherDeps(messages=input.message_history, language=input.language)
+    ) -> NodeRunResult[ResearcherNodeOutput]:
+        deps = ResearcherDeps(language=input.language)
         run = await agent.run(input.task, deps=deps)
         report = run.output
 
@@ -384,11 +418,12 @@ class ResearcherNode(NodeABC[ResearcherInput, ResearcherContext, ResearcherOutpu
             content=report.report,
         )
         return NodeRunResult(
-            output=ResearcherOutput(
-                output_messages=[assistant_message],
+            output=ResearcherNodeOutput(
+                response=assistant_message,
+                reasoning=report.reasoning,
                 report=report.report,
                 sources=report.sources,
                 confidence=report.confidence,
             ),
-            analytics_params={"node": self.name, "cost": float(run.usage.cost or 0.0)},
+            analytics_params={"node": self.name, "cost": run_cost(run)},
         )
