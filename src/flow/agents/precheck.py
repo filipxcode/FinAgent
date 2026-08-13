@@ -5,6 +5,7 @@ from pydantic import Field
 from pydantic_ai import RunContext
 
 from src.config.config import get_settings
+from src.flow.agents.prompt import current_date
 from src.flow.types import (
     BasicMessage,
     LanguageEnum,
@@ -67,6 +68,9 @@ async def get_agent_instructions(ctx: RunContext[PrecheckDeps]) -> str:
       - "Dzięki, to wszystko" -> 'small_talk'
       - "Dzięki, a co z Solaną?" -> 'allowed' (contains a new analytical request)
       - "Jasne, podoba mi się ten raport" -> 'small_talk'
+      
+    # CURRENT DATE
+    {current_date}
 
     ###Input
 
@@ -82,6 +86,7 @@ async def get_agent_instructions(ctx: RunContext[PrecheckDeps]) -> str:
     """
     prompt = cleandoc(prompt)
     return prompt.format(
+        current_date=current_date(),
         last_user_message=last_user_message,
         messages=messages_history,
     )

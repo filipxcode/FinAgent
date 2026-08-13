@@ -80,7 +80,10 @@ class RunContext(BaseModel):
 
 
 class NodeOutput(BaseModel):
-    output_messages: list[BasicMessage] = Field(default_factory=list)
+    response: BasicMessage | None = Field(
+        default=None,
+        description="The assistant reply this node produced, if it produced one.",
+    )
     next_node: str | None = None
     updated_state: ConversationState | None = None
     fallback_reason: str | None = None
