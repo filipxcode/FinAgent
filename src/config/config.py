@@ -28,10 +28,18 @@ class AgentUtilsSettings(BaseSettings):
     )
 
     tavily_api_key: str | None = None
-    etherscan_api_key: str | None = None
 
-    # Host root; tools append the version segment ("/v2/ticker/", "/fng/").
     alternativeme_url: str = "https://api.alternative.me"
+    coinmetrics_url: str = "https://community-api.coinmetrics.io/v4"
+    mempool_url: str = "https://mempool.space/api"
+    blockscout_urls: dict[str, str] = Field(
+        default_factory=lambda: {
+            "ethereum": "https://eth.blockscout.com",
+            "base": "https://base.blockscout.com",
+            "arbitrum": "https://arbitrum.blockscout.com",
+            "optimism": "https://explorer.optimism.io",
+        }
+    )
 
 
 class AgentSettings(BaseModel):
@@ -86,9 +94,9 @@ class Settings(BaseSettings):
                 name="orchestrator",
                 model="gpt-4.1-mini",
             ),
-            "reseacher": AgentSettings(
+            "researcher": AgentSettings(
                 provider="openai",
-                name="reseacher",
+                name="researcher",
                 model="gpt-4.1-mini",
             ),
             "whaletracker": AgentSettings(
