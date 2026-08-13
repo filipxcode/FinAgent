@@ -8,7 +8,7 @@ from typing import Any, cast
 
 from src.config.config import FlowSettings
 from src.flow.agents.orchestrator import OrchestratorNode
-from src.flow.agents.precheck import PrecheckNode, PrecheckOutput
+from src.flow.agents.precheck import PrecheckNode, PrecheckNodeOutput
 from src.flow.types import (
     FlowRunResult,
     FlowStepResult,
@@ -46,7 +46,7 @@ class Flow:
         if step.status == "failed":
             return self._build_result(steps, started_at, "failed", input)
 
-        precheck_output = cast(PrecheckOutput, step.output)
+        precheck_output = cast(PrecheckNodeOutput, step.output)
         if precheck_output.status in (PrecheckStatus.SMALL_TALK, PrecheckStatus.NOT_ALLOWED):
             return self._build_result(steps, started_at, "completed", input)
 
@@ -105,11 +105,7 @@ class Flow:
         input: NodeInput,
         context: NodeContext,
     ) -> FlowStepResult:
-        """Run a node with retries and record its lifecycle (running -> finished/failed).
-
-        The node itself never touches ``status``/``active_node`` — that bookkeeping
-        lives here so every node stays free of flow plumbing.
-        """
+        """Run a node with retries and record its lifecycle (running -> finished/failed)."""
         run_logger = context.logger or logger
         last_error: Exception | None = None
 

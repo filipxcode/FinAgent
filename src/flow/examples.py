@@ -35,7 +35,7 @@ class ConversationOrchestratorNode(NodeABC[NodeInput, NodeContext, NodeOutput]):
         )
 
         return NodeRunResult(
-            output=NodeOutput(output_messages=[assistant_message], next_node=None),
+            output=NodeOutput(response=assistant_message, next_node=None),
             analytics_params={"node": self.name, "message_count": 1, "cost": 0.0},
         )
 
