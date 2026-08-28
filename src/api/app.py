@@ -13,9 +13,18 @@ from src.api.types import (
     ConversationRequestOutput,
 )
 from src.db.postgres import ConversationService
+from src.config.config import Settings
+from src.flow.types import NodeInput, ConversationState
 
 logger = configure_logger("finagent.api")
 
+settings = Settings()
+state = ConversationState()
+try:
+    from src.flow.flow import Flow
+    flow = Flow(settings=settings.flow_settings)
+except Exception as e:
+    logger.error("Error during Flow declaration %e", e)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -49,5 +58,11 @@ async def conversation(
         role="user",
         content=request.conversation,
     )
-    
+    try:
+        message_history = await service.get_history(conversation_id=conversation_id, limit=20)
+        message_history if message_history else []
+        input = NodeInput(conversation_id=conversation_id, current_message=request.conversation, message_history=message_history, state=)
+        flow.run_flow()
+    except Exception as e:
+        logger.error("Error during running a flow %e", e)
     return ConversationRequestOutput(conversation=request.conversation)
