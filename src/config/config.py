@@ -1,10 +1,18 @@
+import logging
 from functools import lru_cache
 from typing import Any, Literal
 from urllib.parse import quote_plus
 
+from httpx import AsyncClient, HTTPStatusError, TransportError
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
+from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.providers.openai import OpenAIProvider
+from pydantic_ai.retries import AsyncTenacityTransport, RetryConfig, wait_retry_after
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from tenacity import before_sleep_log, retry_if_exception_type, stop_after_attempt
+
+retry_logger = logging.getLogger("finagent.retry")
 
 
 class LoggingSettings(BaseSettings):
@@ -15,7 +23,6 @@ class LoggingSettings(BaseSettings):
 class FlowSettings(BaseSettings):
     max_steps: int = 32
     retry_max_attempts: int = 3
-    retry_delay_seconds: float = 0.0
 
 
 class AgentUtilsSettings(BaseSettings):
@@ -64,11 +71,13 @@ class DatabaseSettings(BaseSettings):
 
     @property
     def sqlalchemy_url(self) -> str:
+        # asyncpg takes `ssl`, not the libpq-style `sslmode` query param, so it
+        # is not appended here - local/dev Postgres runs without SSL.
         user = quote_plus(self.user)
         password = quote_plus(self.password)
         return (
             f"postgresql+asyncpg://{user}:{password}@{self.host}:{self.port}/"
-            f"{self.database}?sslmode={self.ssl_mode}"
+            f"{self.database}"
         )
 
 
@@ -124,9 +133,28 @@ class Settings(BaseSettings):
         deps_type: type[Any] | None = None,
         output_type: type[Any] | None = None,
     ) -> Agent[Any, Any]:
+        """Build an agent whose HTTP client retries transient failures itself.
+
+        Retries live here, on the transport, not in Flow: a 5xx/timeout is
+        retried transparently below `agent.run(...)`, so by the time an
+        exception reaches Flow, retries are already exhausted - Flow just
+        records success or failure once.
+        """
         agent_settings = self.get_agent_settings(agent_key)
+        transport = AsyncTenacityTransport(
+            config=RetryConfig(
+                retry=retry_if_exception_type((HTTPStatusError, TransportError)),
+                wait=wait_retry_after(max_wait=30),
+                stop=stop_after_attempt(self.flow_settings.retry_max_attempts),
+                reraise=True,
+                before_sleep=before_sleep_log(retry_logger, logging.WARNING),
+            ),
+            validate_response=lambda r: r.raise_for_status(),
+        )
+        provider = OpenAIProvider(http_client=AsyncClient(transport=transport))
+        model = OpenAIChatModel(agent_settings.model, provider=provider)
         return Agent(
-            model=agent_settings.model_id,
+            model=model,
             name=agent_settings.name,
             deps_type=deps_type,
             output_type=output_type,
