@@ -15,10 +15,6 @@ from src.flow.types import BasicMessage
 
 def to_model_messages(msgs: Iterable[BasicMessage]) -> list[ModelMessage]:
     """Convert stored conversation messages into pydantic-ai history.
-
-    Passed to ``agent.run(..., message_history=...)`` rather than rendered into
-    the instructions, so the system prompt stays a stable, cacheable prefix and
-    the transport-level fields (ids, timestamps, metadata) never reach the model.
     """
     out: list[ModelMessage] = []
     for m in msgs:
