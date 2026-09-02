@@ -15,26 +15,12 @@ from pydantic_ai import RunContext
 from src.config.config import get_settings
 from src.flow.agents.http import get_json
 from src.flow.agents.prompt import current_date
-from src.flow.agents.usage import run_cost
-from src.flow.types import (
-    BasicMessage,
-    LanguageEnum,
-    NodeABC,
-    NodeContext,
-    NodeInput,
-    NodeOutput,
-    NodeRunResult,
-)
+from src.flow.types import LanguageEnum
 
 logger = logging.getLogger(__name__)
 
 WEI_PER_ETH = 1e18
 SATOSHI_PER_BTC = 1e8
-
-
-class WhaleTrackerInput(NodeInput):
-    task: str
-    language: LanguageEnum
 
 
 class WhaleTrackerAgentOutput(BaseModel):
@@ -66,19 +52,6 @@ class WhaleTrackerAgentOutput(BaseModel):
             reading backs the report (e.g. a wallet lookup alone).
         """),
     )
-
-
-class WhaleTrackerNodeOutput(NodeOutput):
-    """Flow-level result of one whale-tracking task, mirroring the agent output."""
-
-    reasoning: str = ""
-    report: str = ""
-    latest_date: date | None = None
-
-
-class WhaleTrackerContext(NodeContext):
-    pass
-
 
 
 class WhaleAsset(StrEnum):
@@ -586,32 +559,3 @@ async def coinmetrics_whale_flows(
         trends=trends,
     )
 
-
-
-@dataclass(kw_only=True)
-class WhaleTrackerNode(NodeABC[WhaleTrackerInput, WhaleTrackerContext, WhaleTrackerNodeOutput]):
-    name: str = "whale_tracker_node"
-
-    async def run_node(
-        self,
-        input: WhaleTrackerInput,
-        context: WhaleTrackerContext,
-    ) -> NodeRunResult[WhaleTrackerNodeOutput]:
-        deps = WhaleTrackerDeps(language=input.language)
-        run = await agent.run(input.task, deps=deps)
-        report = run.output
-
-        assistant_message = BasicMessage(
-            conversation_id=input.current_message.conversation_id,
-            role="assistant",
-            content=report.report,
-        )
-        return NodeRunResult(
-            output=WhaleTrackerNodeOutput(
-                response=assistant_message,
-                reasoning=report.reasoning,
-                report=report.report,
-                latest_date=report.latest_date,
-            ),
-            analytics_params={"node": self.name, "cost": run_cost(run)},
-        )

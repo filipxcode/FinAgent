@@ -14,27 +14,9 @@ from tavily import AsyncTavilyClient
 from src.config.config import get_settings
 from src.flow.agents.http import get_json
 from src.flow.agents.prompt import current_date
-from src.flow.agents.usage import run_cost
-from src.flow.types import (
-    BasicMessage,
-    LanguageEnum,
-    NodeABC,
-    NodeContext,
-    NodeInput,
-    NodeOutput,
-    NodeRunResult,
-)
+from src.flow.types import LanguageEnum
 
 logger = logging.getLogger(__name__)
-
-
-class ResearcherInput(NodeInput):
-    task: str
-    language: LanguageEnum
-
-
-class ResearcherContext(NodeContext):
-    pass
 
 
 class ResearcherAgentOutput(BaseModel):
@@ -75,15 +57,6 @@ class ResearcherAgentOutput(BaseModel):
             too thin to lean on, and the Orchestrator will say so to the user.
         """),
     )
-
-
-class ResearcherNodeOutput(NodeOutput):
-    """Flow-level result of one research task, mirroring the agent output."""
-
-    reasoning: str = ""
-    report: str = ""
-    sources: list[str] = Field(default_factory=list)
-    confidence: float = 0.5
 
 
 class TavilyResult(BaseModel):
@@ -397,33 +370,3 @@ async def fear_greed_index_tool(
 
     entries = [FearGreedEntry(**entry) for entry in (data or {}).get("data", [])]
     return FearGreedResponse(entries=entries)
-
-
-@dataclass(kw_only=True)
-class ResearcherNode(NodeABC[ResearcherInput, ResearcherContext, ResearcherNodeOutput]):
-    name: str = "researcher_node"
-
-    async def run_node(
-        self,
-        input: ResearcherInput,
-        context: ResearcherContext,
-    ) -> NodeRunResult[ResearcherNodeOutput]:
-        deps = ResearcherDeps(language=input.language)
-        run = await agent.run(input.task, deps=deps)
-        report = run.output
-
-        assistant_message = BasicMessage(
-            conversation_id=input.current_message.conversation_id,
-            role="assistant",
-            content=report.report,
-        )
-        return NodeRunResult(
-            output=ResearcherNodeOutput(
-                response=assistant_message,
-                reasoning=report.reasoning,
-                report=report.report,
-                sources=report.sources,
-                confidence=report.confidence,
-            ),
-            analytics_params={"node": self.name, "cost": run_cost(run)},
-        )

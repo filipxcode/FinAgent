@@ -10,22 +10,19 @@ from src.flow.agents.prompt import current_date
 from src.flow.agents.usage import run_cost
 from src.flow.messages import to_model_messages
 from src.flow.types import (
+    BasicMessage,
+    ConversationState,
     LanguageEnum,
     NodeABC,
-    NodeContext,
-    NodeInput,
     NodeOutput,
     NodeRunResult,
     PrecheckStatus,
 )
 
 
-class PrecheckInput(NodeInput):
-    pass
-
-
-class PrecheckContext(NodeContext):
-    pass
+class PrecheckInput(BaseModel):
+    current_message: BasicMessage
+    message_history: list[BasicMessage] = Field(default_factory=list)
 
 
 class PrecheckAgentOutput(BaseModel):
@@ -120,17 +117,16 @@ async def get_agent_instructions() -> str:
     return cleandoc(prompt).format(current_date=current_date())
 
 @dataclass(kw_only=True)
-class PrecheckNode(NodeABC[PrecheckInput, PrecheckContext, PrecheckNodeOutput]):
+class PrecheckNode(NodeABC[PrecheckInput, PrecheckNodeOutput]):
     name: str = "precheck_node"
 
     async def run_node(
-        self,
-        input: PrecheckInput,
-        context: PrecheckContext,
+        self, input: PrecheckInput, state: ConversationState
     ) -> NodeRunResult[PrecheckNodeOutput]:
+        _ = state  
         run = await agent.run(
             input.current_message.content,
-            message_history=to_model_messages(input.message_history[:-1]),
+            message_history=to_model_messages(input.message_history),
         )
         verdict = run.output
         return NodeRunResult(

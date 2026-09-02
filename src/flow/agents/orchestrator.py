@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from inspect import cleandoc
 
 from pydantic import BaseModel, Field
@@ -16,16 +16,17 @@ from src.flow.agents.whale_tracker import agent as whale_tracker_agent
 from src.flow.messages import to_model_messages
 from src.flow.types import (
     BasicMessage,
+    ConversationState,
     LanguageEnum,
     NodeABC,
-    NodeContext,
-    NodeInput,
     NodeOutput,
     NodeRunResult,
 )
 
 
-class OrchestratorInput(NodeInput):
+class OrchestratorInput(BaseModel):
+    current_message: BasicMessage
+    message_history: list[BasicMessage] = Field(default_factory=list)
     language: LanguageEnum
 
 
@@ -84,10 +85,7 @@ class OrchestratorNodeOutput(NodeOutput):
     task_result: str = "None"
     missing_informations: str = "None"
     tool_limitations: str = "None"
-
-
-class OrchestratorContext(NodeContext):
-    pass
+    agent_traces: list[dict] = Field(default_factory=list)
 
 
 @dataclass
@@ -100,6 +98,7 @@ class OrchestratorDeps:
     """
 
     language: LanguageEnum = LanguageEnum.ENG
+    message_history: list[BasicMessage] = field(default_factory=list)
 
 
 ORCHESTRATOR_AGENT_KEY = "orchestrator"
@@ -226,19 +225,18 @@ async def delegate_whale_tracking(
 
 
 @dataclass(kw_only=True)
-class OrchestratorNode(NodeABC[OrchestratorInput, OrchestratorContext, OrchestratorNodeOutput]):
+class OrchestratorNode(NodeABC[OrchestratorInput, OrchestratorNodeOutput]):
     name: str = "orchestrator_node"
 
     async def run_node(
-        self,
-        input: OrchestratorInput,
-        context: OrchestratorContext,
+        self, input: OrchestratorInput, state: ConversationState
     ) -> NodeRunResult[OrchestratorNodeOutput]:
         """Answer the user, then recap the turn in a second pass."""
-        deps = OrchestratorDeps(language=input.language)
+        _ = state
+        deps = OrchestratorDeps(message_history=input.message_history, language=input.language)
         answer_run = await agent.run(
             input.current_message.content,
-            message_history=to_model_messages(input.message_history[:-1]),
+            message_history=to_model_messages(deps.message_history),
             deps=deps,
         )
         recap_run = await agent.run(
@@ -253,6 +251,7 @@ class OrchestratorNode(NodeABC[OrchestratorInput, OrchestratorContext, Orchestra
             role="assistant",
             content=answer_run.output,
         )
+        
         return NodeRunResult(
             output=OrchestratorNodeOutput(
                 response=assistant_message,
