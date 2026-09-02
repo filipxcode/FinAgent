@@ -3,6 +3,9 @@ from typing import Annotated
 from uuid import uuid4
 
 from dotenv import load_dotenv
+
+load_dotenv()
+
 from fastapi import Depends, FastAPI
 
 from src.api.logger import configure_logger
@@ -14,17 +17,16 @@ from src.api.types import (
 )
 from src.db.postgres import ConversationService
 from src.config.config import Settings
-from src.flow.types import NodeInput, ConversationState
+from src.flow.types import FlowInput, ConversationState, BasicMessage
 
 logger = configure_logger("finagent.api")
 
 settings = Settings()
 state = ConversationState()
-try:
-    from src.flow.flow import Flow
-    flow = Flow(settings=settings.flow_settings)
-except Exception as e:
-    logger.error("Error during Flow declaration %e", e)
+from src.flow.flow import Flow
+
+flow = Flow()
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -44,11 +46,11 @@ app = FastAPI(lifespan=lifespan)
 @app.post("/conversation/{conversation_id}")
 async def conversation(
     request: ConversationRequestInput,
-    auth_token: Annotated[str, Depends(get_auth_token)],
+    #auth_token: Annotated[str, Depends(get_auth_token)],
     service: Annotated[ConversationService, Depends(get_service)],
     conversation_id: ConversationIdFieldT | None = None,
 ) -> ConversationRequestOutput:
-    _ = auth_token
+    #_ = auth_token
     if conversation_id is None:
         conversation_id = str(uuid4())
 
@@ -58,11 +60,51 @@ async def conversation(
         role="user",
         content=request.conversation,
     )
+    state.conversation_id = conversation_id
     try:
-        message_history = await service.get_history(conversation_id=conversation_id, limit=20)
-        message_history if message_history else []
-        input = NodeInput(conversation_id=conversation_id, current_message=request.conversation, message_history=message_history, state=)
-        flow.run_flow()
+        message_history = await service.get_history(
+            conversation_id=conversation_id, limit=20
+        )
+        message_history = (
+            [BasicMessage(conversation_id=conversation_id, **m) for m in message_history]
+            if message_history
+            else []
+        )
+        current_message = BasicMessage(
+            conversation_id=conversation_id,
+            role="user",
+            content=request.conversation,
+        )
+
+        input = FlowInput(
+            conversation_id=conversation_id,
+            current_message=current_message,
+            message_history=message_history,
+            state=state,
+        )
+        response = await flow.run(input=input)
+        reply_content = (
+            response.result.response.content if response.result.response else "No response"
+        )
+        await service.save_message(
+            conversation_id=conversation_id,
+            role="assistant",
+            content=reply_content,
+        )
+        return ConversationRequestOutput(
+            conversation=reply_content,
+            conversation_id=conversation_id,
+            status="completed",
+        )
     except Exception as e:
         logger.error("Error during running a flow %e", e)
-    return ConversationRequestOutput(conversation=request.conversation)
+        return ConversationRequestOutput(
+            conversation="Sorry, something went wrong processing your request.",
+            conversation_id=conversation_id,
+            status="failed",
+        )
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")

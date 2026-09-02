@@ -1,6 +1,8 @@
-from typing import Annotated
+from typing import Annotated, Any
 
 from pydantic import BaseModel, Field
+
+from src.flow.types import ConversationStatusT
 
 type ConversationRequestInputT = Annotated[
     str, Field(examples=["Hello, what is your name?"])
@@ -20,4 +22,13 @@ class ConversationRequestInput(BaseModel):
 
 
 class ConversationRequestOutput(BaseModel):
+    conversation_id: ConversationIdFieldT
     conversation: ConversationRequestOutputT
+    status: ConversationStatusT
+    debug: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Temporary debug field: raw node output (reasoning, sub-agent "
+            "traces, etc). Drop before shipping to real clients."
+        ),
+    )
