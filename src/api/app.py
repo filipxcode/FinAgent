@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 from typing import Annotated
 from uuid import uuid4
@@ -8,7 +9,7 @@ load_dotenv()
 
 from fastapi import Depends, FastAPI
 
-from src.api.logger import configure_logger
+from src.api.logger import configure_logging
 from src.api.deps import get_auth_token, get_postgres_client, get_service
 from src.api.types import (
     ConversationIdFieldT,
@@ -19,9 +20,10 @@ from src.db.postgres import ConversationService
 from src.config.config import Settings
 from src.flow.types import FlowInput, ConversationState, BasicMessage
 
-logger = configure_logger("finagent.api")
-
 settings = Settings()
+configure_logging(settings.logging_settings)
+
+logger = logging.getLogger("finagent.api")
 state = ConversationState()
 from src.flow.flow import Flow
 
@@ -107,4 +109,6 @@ async def conversation(
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
+    uvicorn.run(
+        app, host="0.0.0.0", port=8000, log_level=settings.logging_settings.level.lower()
+    )
