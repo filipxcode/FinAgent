@@ -16,6 +16,13 @@ retry_logger = logging.getLogger("finagent.retry")
 
 
 class LoggingSettings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_prefix="LOG_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
     level: str = "INFO"
     format: str = "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
 
