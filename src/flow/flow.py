@@ -40,13 +40,44 @@ class Flow:
             if steps
             else NodeOutput(updated_state=final_state)
         )
+        
+        # Debug logging: print analytics params from all steps
+        logger.debug("=" * 60)
+        logger.debug("FLOW EXECUTION TRACE")
+        logger.debug("=" * 60)
+        for i, step in enumerate(steps, 1):
+            logger.debug(
+                "Step %d - node=%s status=%s latency_ms=%.2f cost=%.4f",
+                i, step.node_name, step.status, step.duration_ms, step.cost or 0.0
+            )
+            if step.analytics_params:
+                logger.debug("  analytics: %s", step.analytics_params)
+            if step.error:
+                logger.debug("  error: %s", step.error)
+        logger.debug("=" * 60)
+        
+        # Build analytics dict for FlowRunResult - includes full reasoning, input, output
+        analytics = {
+            "node_count": len(steps),
+            "nodes": [s.node_name for s in steps],
+            "status": steps[-1].status if steps else "no_steps",
+            "total_latency_ms": duration_ms,
+            "step_latency_ms": [s.duration_ms for s in steps],
+            "total_cost": total_cost,
+            "step_costs": [s.cost for s in steps],
+            "step_reasoning": [s.analytics_params.get("reasoning", "N/A") for s in steps],
+            "step_input": [s.analytics_params.get("input", "N/A") for s in steps],
+            "step_output": [s.output.response.content if s.output.response else "no_response" for s in steps],
+            "step_tokens": [s.analytics_params for s in steps],
+        }
+        
         return FlowRunResult(
             result=result,
             started_at=started_at,
             finished_at=finished_at,
             duration_ms=duration_ms,
             total_cost=total_cost,
-            steps=steps,
+            analytics=analytics,
         )
 
     async def _run_flow(

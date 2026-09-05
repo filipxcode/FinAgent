@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from inspect import cleandoc
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -65,9 +66,17 @@ class PrecheckNodeOutput(NodeOutput):
     language: LanguageEnum = LanguageEnum.ENG
 
 
+@dataclass
+class PrecheckDeps:
+    """Runtime parameters for one precheck classification."""
+
+    analytics_params: dict[str, Any] = field(default_factory=dict)
+
+
 PRECHECK_AGENT_KEY = "precheck"
 agent = get_settings().get_agent(
     PRECHECK_AGENT_KEY,
+    deps_type=PrecheckDeps,
     output_type=PrecheckAgentOutput,
 )
 
@@ -123,17 +132,32 @@ class PrecheckNode(NodeABC[PrecheckInput, PrecheckNodeOutput]):
     async def run_node(
         self, input: PrecheckInput, state: ConversationState
     ) -> NodeRunResult[PrecheckNodeOutput]:
-        _ = state  
+        _ = state
+        deps = PrecheckDeps()
         run = await agent.run(
             input.current_message.content,
             message_history=to_model_messages(input.message_history),
+            deps=deps,
         )
         verdict = run.output
+        run_usage = run.usage if run.usage else None
+        deps.analytics_params.update(
+            {
+                "node": self.name,
+                "reasoning": verdict.reasoning,
+                "cost": run_cost(run),
+                "input": str(input.current_message.content),
+                "output": verdict.status.value,
+                "total_tokens": run_usage.total_tokens if run_usage else 0,
+                "input_tokens": run_usage.input_tokens if run_usage else 0,
+                "output_tokens": run_usage.output_tokens if run_usage else 0,
+            }
+        )
         return NodeRunResult(
             output=PrecheckNodeOutput(
                 reasoning=verdict.reasoning,
                 status=verdict.status,
                 language=verdict.language,
             ),
-            analytics_params={"node": self.name, "cost": run_cost(run)},
+            analytics_params=deps.analytics_params,
         )

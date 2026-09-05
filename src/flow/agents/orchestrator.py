@@ -196,6 +196,7 @@ async def delegate_research(
 async def delegate_whale_tracking(
     ctx: RunContext[OrchestratorDeps],
     task: str,
+    reason: str,
     background: str | None = None,
 ) -> WhaleTrackerAgentOutput:
     R"""Delegate one self-contained on-chain task to the Whale Tracker Agent.
@@ -209,6 +210,8 @@ async def delegate_whale_tracking(
         task: A standalone on-chain question. The agent sees none of this
             conversation, so name the asset, wallet address and comparison
             period explicitly.
+        reason: One sentence on why this task needs the Whale Tracker Agent
+            specifically - for developers reading traces, never shown to the user.
         background: At most 1-3 sentences of earlier context, and only when it
             changes the answer. Leave unset otherwise.
 
@@ -220,6 +223,15 @@ async def delegate_whale_tracking(
         task,
         deps=WhaleTrackerDeps(language=ctx.deps.language, background=background),
         usage=ctx.usage,
+    )
+    ctx.deps.analytics_params.setdefault("delegations", []).append(
+        {
+            "agent": "whale_tracker",
+            "task": task,
+            "orchestrator_reason": reason,
+            "agent_reasoning": run.output.reasoning,
+            "cost": run_cost(run),
+        }
     )
     return run.output
 

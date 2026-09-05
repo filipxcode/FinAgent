@@ -84,6 +84,7 @@ class FlowStepResult(BaseModel):
     finished_at: datetime
     duration_ms: float
     output: SerializeAsAny[NodeOutput]
+    # analytics_params: debug/monitoring dict with reasoning, input, output summaries, latency, cost
     analytics_params: dict[str, Any] = Field(default_factory=dict)
     cost: float | None = None
     error: str | None = None
@@ -95,7 +96,11 @@ class FlowRunResult(BaseModel):
     finished_at: datetime | None = None
     duration_ms: float | None = None
     total_cost: float | None = None
-    steps: list[FlowStepResult] = Field(default_factory=list)
+    # analytics: summary of all steps - reasoning, input, output, latency, cost per node
+    analytics: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Global flow analytics: step summaries, reasoning, latency, costs"
+    )
 
 
 class NodeABC[TNodeInput: TNodeInput_t, TNodeOutput: NodeOutput](ABC):
