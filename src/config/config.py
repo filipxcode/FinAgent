@@ -54,6 +54,14 @@ class AgentUtilsSettings(BaseSettings):
             "optimism": "https://explorer.optimism.io",
         }
     )
+    rss_urls: list[str]=["https://www.federalreserve.gov/feeds/press_all.xml", "https://www.sec.gov/news/pressreleases.rss"]
+    news_keywords: list[str] = Field(
+        default_factory=lambda: [
+            "crypto", "bitcoin", "ethereum", "digital asset", "stablecoin",
+            "cpi", "inflation", "interest rate", "fomc", "federal funds",
+            "rate cut", "rate hike", "etf",
+        ]
+    )
 
 
 class AgentSettings(BaseModel):
@@ -120,6 +128,11 @@ class Settings(BaseSettings):
                 name="whaletracker",
                 model="gpt-4.1-mini",
             ),
+            "news_agent": AgentSettings(
+                provider="openai",
+                name="news_agent",
+                model="gpt-4.1-mini",
+            )
         }
     )
     db_settings: DatabaseSettings = Field(default_factory=DatabaseSettings)
