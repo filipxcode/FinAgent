@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from inspect import cleandoc
+from typing import Any
 
 from pydantic import BaseModel, Field
 from pydantic_ai import RunContext
@@ -13,6 +14,8 @@ from src.flow.agents.researcher import agent as researcher_agent
 from src.flow.agents.usage import run_cost
 from src.flow.agents.whale_tracker import WhaleTrackerAgentOutput, WhaleTrackerDeps
 from src.flow.agents.whale_tracker import agent as whale_tracker_agent
+from src.flow.agents.news_agent import NewsAgentOutput, NewsAgentDeps
+from src.flow.agents.news_agent import agent as news_agent
 from src.flow.messages import to_model_messages
 from src.flow.types import (
     BasicMessage,
@@ -85,7 +88,6 @@ class OrchestratorNodeOutput(NodeOutput):
     task_result: str = "None"
     missing_informations: str = "None"
     tool_limitations: str = "None"
-    agent_traces: list[dict] = Field(default_factory=list)
 
 
 @dataclass
@@ -99,6 +101,7 @@ class OrchestratorDeps:
 
     language: LanguageEnum = LanguageEnum.ENG
     message_history: list[BasicMessage] = field(default_factory=list)
+    analytics_params: dict[str, Any] = field(default_factory=dict)
 
 
 ORCHESTRATOR_AGENT_KEY = "orchestrator"
@@ -129,10 +132,14 @@ async def get_agent_instructions(ctx: RunContext[OrchestratorDeps]) -> str:
 
     # YOUR SPECIALISTS
     - delegate_research — market data and everything around it: prices, market
-      caps, volumes, rankings, the Fear & Greed index, news, narratives, macro.
+      caps, volumes, rankings, the Fear & Greed index, crypto-native news,
+      narratives, macro context.
     - delegate_whale_tracking — on-chain movement of large holders: coins
       flowing onto or off exchanges, whether a day is unusual against its own
       history, and what one known wallet address holds and has moved.
+    - news_feed — official macro and regulatory headlines: Federal Reserve
+      rate decisions/FOMC statements and SEC enforcement/rulemaking, with the
+      full story already read, not just a title.
 
     # HOW TO WORK
     - Answer directly, without delegating, when the question is about the
@@ -166,6 +173,7 @@ async def get_agent_instructions(ctx: RunContext[OrchestratorDeps]) -> str:
 async def delegate_research(
     ctx: RunContext[OrchestratorDeps],
     task: str,
+    reason: str,
     background: str | None = None,
 ) -> ResearcherAgentOutput:
     R"""Delegate one self-contained market-research task to the Research Agent.
@@ -177,6 +185,8 @@ async def delegate_research(
     Args:
         task: A standalone research question. The agent sees none of this
             conversation, so name the coins, figures and time ranges explicitly.
+        reason: One sentence on why this task needs the Research Agent
+            specifically - for developers reading traces, never shown to the user.
         background: At most 1-3 sentences of earlier context, and only when it
             changes the answer — e.g. the user is comparing against a figure
             from an earlier turn. Leave unset otherwise.
@@ -188,6 +198,15 @@ async def delegate_research(
         task,
         deps=ResearcherDeps(language=ctx.deps.language, background=background),
         usage=ctx.usage,
+    )
+    ctx.deps.analytics_params.setdefault("delegations", []).append(
+        {
+            "agent": "researcher",
+            "task": task,
+            "orchestrator_reason": reason,
+            "agent_reasoning": run.output.reasoning,
+            "cost": run_cost(run),
+        }
     )
     return run.output
 
@@ -235,6 +254,42 @@ async def delegate_whale_tracking(
     )
     return run.output
 
+@agent.tool
+async def news_feed(ctx: RunContext[OrchestratorDeps], task: str, reason: str) -> NewsAgentOutput:
+    R"""Delegate one self-contained macro/regulatory news task to the News Agent.
+
+    Covers Federal Reserve and SEC headlines - rate decisions, FOMC statements,
+    enforcement actions, rulemaking. The News Agent reads the full article
+    itself when a headline looks relevant, so its report already reflects the
+    actual story, not just a title - no need to follow up with
+    `delegate_research` for the same headline. For crypto-native news,
+    narratives or market data, use `delegate_research` instead.
+
+    Args:
+        task: A standalone news question. The agent sees none of this
+            conversation, so name the topic, asset or agency explicitly.
+        reason: One sentence on why this task needs the News Agent
+            specifically - for developers reading traces, never shown to the user.
+
+    Returns the report with its sources and a 0-1 confidence. Low confidence
+    means no relevant headline was found - say so rather than presenting it as
+    settled.
+    """
+    run = await news_agent.run(
+        task,
+        deps=NewsAgentDeps(language=ctx.deps.language),
+        usage=ctx.usage
+    )
+    ctx.deps.analytics_params.setdefault("delegations", []).append(
+        {
+            "agent": "news_agent",
+            "task": task,
+            "orchestrator_reason": reason,
+            "agent_reasoning": run.output.reasoning,
+            "cost": run_cost(run),
+        }
+    )
+    return run.output
 
 @dataclass(kw_only=True)
 class OrchestratorNode(NodeABC[OrchestratorInput, OrchestratorNodeOutput]):
@@ -264,6 +319,12 @@ class OrchestratorNode(NodeABC[OrchestratorInput, OrchestratorNodeOutput]):
             content=answer_run.output,
         )
         
+        deps.analytics_params.update(
+            {
+                "node": self.name,
+                "cost": run_cost(answer_run, recap_run),
+            }
+        )
         return NodeRunResult(
             output=OrchestratorNodeOutput(
                 response=assistant_message,
@@ -272,8 +333,5 @@ class OrchestratorNode(NodeABC[OrchestratorInput, OrchestratorNodeOutput]):
                 missing_informations=recap.missing_informations,
                 tool_limitations=recap.tool_limitations,
             ),
-            analytics_params={
-                "node": self.name,
-                "cost": run_cost(answer_run, recap_run),
-            },
+            analytics_params=deps.analytics_params,
         )
