@@ -118,18 +118,25 @@ class ConversationService:
             await session.commit()
 
     async def get_history(
-        self, *, conversation_id: str, limit: int = 50
+        self,
+        *,
+        conversation_id: str,
+        limit: int = 50,
+        before: datetime | None = None,
     ) -> list[dict[str, Any]]:
-        stmt = (
-            select(
-                ConversationMessageRow.role,
-                ConversationMessageRow.content,
-                ConversationMessageRow.created_at,
-            )
-            .where(ConversationMessageRow.conversation_id == conversation_id)
-            .order_by(ConversationMessageRow.created_at.desc())
-            .limit(limit)
-        )
+        """Most recent ``limit`` messages, oldest first.
+
+        ``before`` pages further back in time: pass the ``created_at`` of the
+        oldest message seen so far to get the page right before it.
+        """
+        stmt = select(
+            ConversationMessageRow.role,
+            ConversationMessageRow.content,
+            ConversationMessageRow.created_at,
+        ).where(ConversationMessageRow.conversation_id == conversation_id)
+        if before is not None:
+            stmt = stmt.where(ConversationMessageRow.created_at < before)
+        stmt = stmt.order_by(ConversationMessageRow.created_at.desc()).limit(limit)
 
         async for session in self.db.session():
             result = await session.execute(stmt)

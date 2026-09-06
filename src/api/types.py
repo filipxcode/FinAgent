@@ -1,8 +1,9 @@
+from datetime import datetime
 from typing import Annotated, Any
 
 from pydantic import BaseModel, Field
 
-from src.flow.types import ConversationStatusT
+from src.flow.types import BasicMessage, ConversationStatusT
 
 type ConversationRequestInputT = Annotated[
     str, Field(examples=["Hello, what is your name?"])
@@ -30,5 +31,16 @@ class ConversationRequestOutput(BaseModel):
         description=(
             "Temporary debug field: raw node output (reasoning, sub-agent "
             "traces, etc). Drop before shipping to real clients."
+        ),
+    )
+
+
+class HistoryResponse(BaseModel):
+    messages: list[BasicMessage] = Field(default_factory=list, description="Oldest first.")
+    next_cursor: datetime | None = Field(
+        default=None,
+        description=(
+            "Pass as `before` to fetch the page right before this one. "
+            "None means there is no older history left."
         ),
     )

@@ -7,7 +7,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from fastapi import Depends, FastAPI
+from datetime import datetime
+
+from fastapi import Depends, FastAPI, Query
 
 from src.api.logger import configure_logging
 from src.api.deps import get_auth_token, get_postgres_client, get_service
@@ -15,6 +17,7 @@ from src.api.types import (
     ConversationIdFieldT,
     ConversationRequestInput,
     ConversationRequestOutput,
+    HistoryResponse,
 )
 from src.db.postgres import ConversationService
 from src.config.config import Settings
@@ -45,13 +48,13 @@ app = FastAPI(lifespan=lifespan)
 
 
 @app.post("/conversation")
-@app.post("/conversation/{conversation_id}")
+@app.post("/conversation/{conversation_id}", response_model=ConversationRequestOutput)
 async def conversation(
     request: ConversationRequestInput,
     #auth_token: Annotated[str, Depends(get_auth_token)],
     service: Annotated[ConversationService, Depends(get_service)],
     conversation_id: ConversationIdFieldT | None = None,
-) -> ConversationRequestOutput:
+):
     #_ = auth_token
     if conversation_id is None:
         conversation_id = str(uuid4())
@@ -106,6 +109,24 @@ async def conversation(
             status="failed",
         )
 
+@app.get("/history", response_model=HistoryResponse)
+async def history(
+    #auth_token: Annotated[str, Depends(get_auth_token)],
+    service: Annotated[ConversationService, Depends(get_service)],
+    conversation_id: ConversationIdFieldT,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    before: Annotated[
+        datetime | None,
+        Query(description="Fetch messages older than this timestamp."),
+    ] = None,
+):
+    message_history = await service.get_history(
+        conversation_id=conversation_id, limit=limit, before=before
+    )
+    messages = [BasicMessage(conversation_id=conversation_id, **m) for m in message_history]
+    next_cursor = messages[0].created_at if len(messages) == limit else None
+    return HistoryResponse(messages=messages, next_cursor=next_cursor)
+        
 if __name__ == "__main__":
     import uvicorn
 
