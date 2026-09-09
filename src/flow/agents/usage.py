@@ -10,13 +10,7 @@ logger = logging.getLogger(__name__)
 
 
 def run_cost(*runs: AgentRunResult[Any]) -> float:
-    """USD price of one or more finished agent runs.
-
-    pydantic-ai reports token counts, not money, so the price table comes from
-    ``genai_prices`` (a dependency it already ships). A run nobody can price —
-    an unknown model, a test model — counts as 0.0 rather than failing the whole
-    node over an analytics figure.
-    """
+    """USD price of one or more finished agent runs."""
     total = 0.0
     for run in runs:
         response = run.response

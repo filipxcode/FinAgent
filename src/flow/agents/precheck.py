@@ -55,11 +55,7 @@ class PrecheckAgentOutput(BaseModel):
 
 
 class PrecheckNodeOutput(NodeOutput):
-    """Flow-level verdict on the incoming message, mirroring the agent output.
-
-    The flow branches on ``status`` and hands ``language`` down to every later
-    node, so both are lifted out of the agent output onto the node result.
-    """
+    """Flow-level verdict on the incoming message, mirroring the agent output."""
 
     reasoning: str = ""
     status: PrecheckStatus = PrecheckStatus.ALLOWED
@@ -83,12 +79,7 @@ agent = get_settings().get_agent(
 
 @agent.instructions
 async def get_agent_instructions() -> str:
-    """Build the system prompt.
-
-    Fully static: the message being classified arrives as the prompt and the
-    conversation before it as ``message_history``, so this prefix never changes
-    between turns and stays cacheable.
-    """
+    """Build the system prompt."""
     prompt = """
     # CURRENT DATE
     {current_date}
@@ -112,8 +103,8 @@ async def get_agent_instructions() -> str:
        - 'eng': If the user's input language is English or any other language.
 
     # CONTEXT EVALUATION RULES
-    - **Context Awareness**: Always check 'Message history'. If the user says something ambiguous like "Za ile?", "Dlaczego?", "Sprawdź to" or "Tak", evaluate it relative to what was discussed previously. If the history was about Ethereum, "Dlaczego?" is 'allowed' (it's a follow-up).
-    - **Affirmations vs Follow-ups**: 
+    - Context awareness: always check your message history. If the user says something ambiguous like "Za ile?", "Dlaczego?", "Sprawdź to" or "Tak", evaluate it relative to what was discussed previously. If the history was about Ethereum, "Dlaczego?" is 'allowed' (it's a follow-up).
+    - Affirmations vs follow-ups:
       - "Dzięki, to wszystko" -> 'small_talk'
       - "Dzięki, a co z Solaną?" -> 'allowed' (contains a new analytical request)
       - "Jasne, podoba mi się ten raport" -> 'small_talk'

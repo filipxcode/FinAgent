@@ -57,7 +57,7 @@ class OrchestratorAgentOutput(BaseModel):
             information - treat what the specialists returned as ground truth,
             including their dates and figures. Leave out anything the user did
             not ask about, and never name technical errors, tools or agents here.
-            "None" when no tool was used (small talk or a purely conversational
+            'None' when no tool was used (small talk or a purely conversational
             answer).
         """),
     )
@@ -67,7 +67,7 @@ class OrchestratorAgentOutput(BaseModel):
             What the user's question needed but no specialist could supply - data
             that was not covered, a period with no readings, an ambiguity the user
             still has to resolve. Phrase it as the gap itself, not as a failure.
-            "None" when the answer is complete.
+            'None' when the answer is complete.
         """),
     )
     tool_limitations: str = Field(
@@ -76,7 +76,7 @@ class OrchestratorAgentOutput(BaseModel):
             Constraints of the data behind the answer that shape how it should be
             read - e.g. on-chain readings are daily and close a day late, a
             confidence score came back low, a source returned partial results.
-            "None" when nothing limited the answer.
+            'None' when nothing limited the answer.
         """),
     )
 
@@ -117,13 +117,13 @@ async def get_agent_instructions(ctx: RunContext[OrchestratorDeps]) -> str:
     a time and forget it immediately.
 
     # YOUR SPECIALISTS
-    - delegate_research — market data and everything around it: prices, market
+    - 'delegate_research' — market data and everything around it: prices, market
       caps, volumes, rankings, the Fear & Greed index, crypto-native news,
       narratives, macro context.
-    - delegate_whale_tracking — on-chain movement of large holders: coins
+    - 'delegate_whale_tracking' — on-chain movement of large holders: coins
       flowing onto or off exchanges, whether a day is unusual against its own
       history, and what one known wallet address holds and has moved.
-    - news_feed — official macro and regulatory headlines: Federal Reserve
+    - 'news_feed' — official macro and regulatory headlines: Federal Reserve
       rate decisions/FOMC statements and SEC enforcement/rulemaking, with the
       full story already read, not just a title.
 
@@ -169,7 +169,7 @@ async def delegate_research(
 
     Covers prices, market caps, volumes, rankings, market sentiment, news,
     narratives and macro context. For what large holders are doing on-chain,
-    use "delegate_whale_tracking" instead.
+    use 'delegate_whale_tracking' instead.
 
     Args:
         task: A standalone research question. The agent sees none of this
@@ -212,7 +212,7 @@ async def delegate_whale_tracking(
     Covers whether large holders are moving coins onto exchanges (positioning to
     sell) or off them (moving into storage), whether the latest day is unusual
     against its own history, and what one known wallet address holds and has
-    moved. For prices, market caps or news, use "delegate_research" instead.
+    moved. For prices, market caps or news, use 'delegate_research' instead.
 
     Args:
         task: A standalone on-chain question. The agent sees none of this
@@ -224,7 +224,7 @@ async def delegate_whale_tracking(
             changes the answer. Leave unset otherwise.
 
     On-chain values are daily and published after a day closes, so the newest
-    reading is normally yesterday's. Keep the returned "latest_date" in your
+    reading is normally yesterday's. Keep the returned 'latest_date' in your
     answer and never present the figures as intraday.
     """
     run = await whale_tracker_agent.run(
@@ -251,8 +251,8 @@ async def news_feed(ctx: RunContext[OrchestratorDeps], task: str, reason: str) -
     enforcement actions, rulemaking. The News Agent reads the full article
     itself when a headline looks relevant, so its report already reflects the
     actual story, not just a title - no need to follow up with
-    "delegate_research" for the same headline. For crypto-native news,
-    narratives or market data, use "delegate_research" instead.
+    'delegate_research' for the same headline. For crypto-native news,
+    narratives or market data, use 'delegate_research' instead.
 
     Args:
         task: A standalone news question. The agent sees none of this

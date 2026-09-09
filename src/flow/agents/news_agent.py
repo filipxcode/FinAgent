@@ -140,13 +140,13 @@ async def get_agent_instructions() -> str:
     to you and expects a factual, well-sourced answer back.
 
     # HOW TO WORK
-    - Call `get_macro_news` to get the latest headlines from official macro
+    - Call 'get_macro_news' to get the latest headlines from official macro
       (Federal Reserve) and regulatory (SEC) feeds.
     - Judge which returned headlines are actually relevant to the task - most
       are not, since these feeds cover everything the source publishes, not
       only crypto/markets.
     - A headline and date are rarely enough to answer the task. For any
-      headline that looks directly relevant, call `extract_article` with its
+      headline that looks directly relevant, call 'extract_article' with its
       exact URL to read the full story before writing your report - do not
       guess at the content from the title alone.
     - Never fabricate headlines, dates or URLs. Only cite sources you actually
@@ -171,14 +171,14 @@ async def get_macro_news() -> FeedToolResponse:
     handle, not just what's relevant here. Use this for "what's the latest on
     rates/regulation" style questions; for crypto-native news, narratives or
     anything these feeds don't cover, delegate to the Research Agent's
-    `tavily_search` instead.
+    'tavily_search' instead.
 
     Each entry gives a title, link and published date - not the full article.
     If a headline looks worth digging into for the task, follow up on that URL
     rather than guessing at the story from the title alone.
 
     Results are newest first. On any transport/API failure the tool returns
-    whatever feeds succeeded, with `error` naming the ones that failed - it
+    whatever feeds succeeded, with 'error' naming the ones that failed - it
     never raises.
     """
     settings = get_settings().agent_utils_settings
@@ -194,20 +194,20 @@ async def get_macro_news() -> FeedToolResponse:
 
 @agent.tool_plain
 async def extract_article(urls: list[str]) -> ExtractResponse:
-    R"""Fetch the full text of one or more article URLs from `get_macro_news`.
+    R"""Fetch the full text of one or more article URLs from 'get_macro_news'.
 
     Use this once a headline looks directly relevant to the task, to read the
     actual story instead of just the title. Pass exact URLs you got back from
-    `get_macro_news` - never a guessed or reconstructed link.
+    'get_macro_news' - never a guessed or reconstructed link.
 
     Args:
         urls: One or more article URLs to fetch. Keep this small - only the
             headlines that actually matter to the task, not every one
-            `get_macro_news` returned.
+            'get_macro_news' returned.
 
-    On any transport/API failure the tool returns a response with `error` set.
+    On any transport/API failure the tool returns a response with 'error' set.
     A URL that fails extraction individually (paywalled, blocked, etc.) is
-    listed in `failed_urls` instead of failing the whole call.
+    listed in 'failed_urls' instead of failing the whole call.
     """
     api_key = get_settings().agent_utils_settings.tavily_api_key
     if not api_key:
