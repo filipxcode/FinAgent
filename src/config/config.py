@@ -86,8 +86,6 @@ class DatabaseSettings(BaseSettings):
 
     @property
     def sqlalchemy_url(self) -> str:
-        # asyncpg takes `ssl`, not the libpq-style `sslmode` query param, so it
-        # is not appended here - local/dev Postgres runs without SSL.
         user = quote_plus(self.user)
         password = quote_plus(self.password)
         return (
@@ -132,7 +130,12 @@ class Settings(BaseSettings):
                 provider="openai",
                 name="news_agent",
                 model="gpt-4.1-mini",
-            )
+            ),
+            "answer": AgentSettings(
+                provider="openai",
+                name="answer",
+                model="gpt-4.1-mini",
+            ),
         }
     )
     db_settings: DatabaseSettings = Field(default_factory=DatabaseSettings)
@@ -154,11 +157,6 @@ class Settings(BaseSettings):
         output_type: type[Any] | None = None,
     ) -> Agent[Any, Any]:
         """Build an agent whose HTTP client retries transient failures itself.
-
-        Retries live here, on the transport, not in Flow: a 5xx/timeout is
-        retried transparently below `agent.run(...)`, so by the time an
-        exception reaches Flow, retries are already exhausted - Flow just
-        records success or failure once.
         """
         agent_settings = self.get_agent_settings(agent_key)
         transport = AsyncTenacityTransport(

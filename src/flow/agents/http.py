@@ -14,10 +14,10 @@ async def get_json(
     headers: dict[str, str] | None = None,
     timeout: float = 20.0,
 ) -> tuple[Any | None, str | None]:
-    """GET a JSON endpoint and return ``(payload, error)``.
+    """GET a JSON endpoint and return a '(payload, error)' pair.
 
     Shared by every agent tool that talks to an external HTTP API. Transport and
-    HTTP failures never propagate — they come back as a readable ``error``
+    HTTP failures never propagate — they come back as a readable 'error'
     string so a tool can degrade instead of failing the whole flow run. Exactly
     one of the two slots is ever populated.
     """

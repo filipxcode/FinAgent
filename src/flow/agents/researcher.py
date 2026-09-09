@@ -91,7 +91,7 @@ class CoinTicker(BaseModel):
     id: int
     name: str
     symbol: str
-    website_slug: str = Field(description="Identifier to pass to exact_crypto_tool.")
+    website_slug: str = Field(description="Identifier to pass to 'exact_crypto_tool'.")
     rank: int | None = None
     price_usd: float | None = None
     volume_24h_usd: float | None = None
@@ -142,7 +142,7 @@ class FearGreedResponse(BaseModel):
 
 
 def _parse_coin(raw: dict[str, Any]) -> CoinTicker:
-    """Map one raw alternative.me ticker entry onto :class:`CoinTicker`."""
+    """Map one raw alternative.me ticker entry onto 'CoinTicker'."""
     quote = (raw.get("quotes") or {}).get("USD") or {}
     return CoinTicker(
         id=raw["id"],
@@ -193,9 +193,9 @@ async def get_agent_instructions(ctx: RunContext[ResearcherDeps]) -> str:
     # HOW TO WORK
     - Decide which tool(s) the task actually needs; you may call them multiple
       times with refined queries. Market overview / top coins ->
-      base_crypto_tool. A single named coin -> exact_crypto_tool. Market mood ->
-      fear_greed_index_tool. News, narratives, macro or anything the market
-      endpoints do not cover -> tavily_search.
+      'base_crypto_tool'. A single named coin -> 'exact_crypto_tool'. Market
+      mood -> 'fear_greed_index_tool'. News, narratives, macro or anything the
+      market endpoints do not cover -> 'tavily_search'.
     - Every monetary figure the crypto tools return is denominated in USD.
       Always state amounts as USD; never convert to another currency, and never
       imply a figure is in anything else — not even when the user writes in
@@ -239,7 +239,7 @@ async def tavily_search(query: str, max_results: int = 5) -> TavilySearchRespons
         query: The search query in natural language.
         max_results: How many results to return (1-10, default 5).
 
-    On any transport/API failure the tool returns a response with `error` set
+    On any transport/API failure the tool returns a response with 'error' set
     (server-error fallback) instead of raising, so keep working with what you have.
     """
     api_key = get_settings().agent_utils_settings.tavily_api_key
@@ -285,7 +285,7 @@ async def base_crypto_tool(
         top_k_crypto: How many coins to return (1-50, default 5).
         sort: Field the coin list is ordered by (default: market-cap rank).
 
-    All amounts are USD. On any API failure the response comes back with `error`
+    All amounts are USD. On any API failure the response comes back with 'error'
     set instead of raising.
     """
     url = get_settings().agent_utils_settings.alternativeme_url
@@ -327,13 +327,13 @@ async def base_crypto_tool(
 async def exact_crypto_tool(website_slug: str) -> CoinDetailResponse:
     R"""Get the current USD figures for one specific coin.
 
-    Use this once you know which coin the task is about. The `website_slug` is
-    the lowercase name form ("bitcoin", "ethereum")
+    Use this once you know which coin the task is about. The 'website_slug' is
+    the lowercase name form ('bitcoin', 'ethereum').
 
     Args:
-        website_slug: Coin identifier, e.g. "bitcoin".
+        website_slug: Coin identifier, e.g. 'bitcoin'.
 
-    All amounts are USD. On any API failure the response comes back with `error`
+    All amounts are USD. On any API failure the response comes back with 'error'
     set instead of raising.
     """
     url = get_settings().agent_utils_settings.alternativeme_url

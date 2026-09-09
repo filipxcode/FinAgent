@@ -64,7 +64,7 @@ class Lookback(StrEnum):
 
     This does not change which day is reported - the newest day is always
     reported. It sets what that day is measured against, so "is today unusual
-    compared to the last two months" is TWO_MONTHS. Short windows react fast
+    compared to the last two months" is '60d'. Short windows react fast
     but call ordinary weekly swings unusual; long windows only flag moves that
     are rare on that timescale.
     """
@@ -237,7 +237,7 @@ class WalletAccount(BaseModel):
     address: str
     chain: Chain
     native_symbol: str = Field(
-        description="Currency that `balance` and every `value` are denominated in."
+        description="Currency that 'balance' and every 'value' are denominated in."
     )
     label: str | None = Field(
         default=None, description="Known name of this address, when the explorer has one."
@@ -254,8 +254,8 @@ class WhaleTrackerDeps:
     """Runtime parameters for one delegated whale-tracking task.
 
     Deliberately carries no conversation history: the Orchestrator owns the
-    conversation and hands down a self-contained ``task`` plus, when it actually
-    changes the answer, a short ``background`` it wrote itself.
+    conversation and hands down a self-contained 'task' plus, when it actually
+    changes the answer, a short 'background' it wrote itself.
     """
 
     language: LanguageEnum = LanguageEnum.ENG
@@ -291,10 +291,11 @@ async def get_agent_instructions(ctx: RunContext[WhaleTrackerDeps]) -> str:
 
     # HOW TO WORK
     - Chain-wide questions ("are whales moving", "anything unusual on-chain",
-      "are they accumulating") -> coinmetrics_whale_flows. Questions about one
-      known wallet address -> wallet_activity. You may call tools in parallel.
-    - Pick 'lookback' from the question: "unusual today" -> 30d, "over the last
-      two months" -> 60d. It sets the comparison baseline, not the reported day.
+      "are they accumulating") -> 'coinmetrics_whale_flows'. Questions about one
+      known wallet address -> 'wallet_activity'. You may call tools in parallel.
+    - Pick 'lookback' from the question: "unusual today" -> '30d', "over the
+      last two months" -> '60d'. It sets the comparison baseline, not the
+      reported day.
     - Judge unusualness by 'zscore', never by eyeballing the raw value. Inside
       -2..2 the day is ordinary — say so plainly rather than inventing a story.
       Outside it, state the direction and by how much.
@@ -408,7 +409,7 @@ async def wallet_activity(
 
     Use this when an address is already known — verifying a reported whale move,
     or following an entity's wallet. For "what are whales doing" in general,
-    with no address in hand, use "coinmetrics_whale_flows" instead.
+    with no address in hand, use 'coinmetrics_whale_flows' instead.
 
     Args:
         address: The wallet to inspect, on the chain given below.
@@ -491,7 +492,7 @@ async def coinmetrics_whale_flows(
     Answers questions like "are whales moving right now", "is anything unusual
     happening on-chain", "are they accumulating or preparing to sell". It looks
     at aggregate flows across the whole chain, not at individual wallets — use
-    `wallet_activity` when a specific address is already known.
+    'wallet_activity' when a specific address is already known.
 
     How to read the result. Every metric comes back as its newest daily value
     plus statistics against the baseline window. 'zscore' is the judgement call:
@@ -505,16 +506,16 @@ async def coinmetrics_whale_flows(
     Args:
         asset: Chain to inspect. Only Bitcoin and Ethereum have free on-chain data.
         lookback: How far back the comparison baseline reaches. Pick it from the
-            question: "unusual today" is served by 30d, "over the last two
-            months" by 60d.
+            question: "unusual today" is served by '30d', "over the last two
+            months" by '60d'.
         metrics: What to measure. The default — exchange inflow, outflow and
             coins held on exchanges — answers the great majority of whale
-            questions. Add active_addresses or transfer_count only to check
+            questions. Add 'active_addresses' or 'transfer_count' only to check
             whether a move was whale-specific or the whole chain being busier.
 
     Values are daily and published after a day closes, so the newest reading is
     normally yesterday's — never describe it as intraday or as "right now". On
-    any API failure the response comes back with `error` set instead of raising.
+    any API failure the response comes back with 'error' set instead of raising.
     """
     supported = list(dict.fromkeys(metrics or _DEFAULT_METRICS))
     days = _LOOKBACK_DAYS[lookback]
