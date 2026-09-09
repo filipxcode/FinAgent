@@ -130,7 +130,12 @@ class Settings(BaseSettings):
                 provider="openai",
                 name="news_agent",
                 model="gpt-4.1-mini",
-            )
+            ),
+            "answer": AgentSettings(
+                provider="openai",
+                name="answer",
+                model="gpt-4.1-mini",
+            ),
         }
     )
     db_settings: DatabaseSettings = Field(default_factory=DatabaseSettings)
