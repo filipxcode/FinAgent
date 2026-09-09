@@ -55,6 +55,8 @@ class AgentUtilsSettings(BaseSettings):
         }
     )
     rss_urls: list[str]=["https://www.federalreserve.gov/feeds/press_all.xml", "https://www.sec.gov/news/pressreleases.rss"]
+    wallet_batch_max_addresses: int = 10
+    wallet_batch_max_concurrency: int = 5
     news_keywords: list[str] = Field(
         default_factory=lambda: [
             "crypto", "bitcoin", "ethereum", "digital asset", "stablecoin",
