@@ -9,6 +9,7 @@ from inspect import cleandoc
 import feedparser
 import httpx
 from pydantic import BaseModel, Field
+from pydantic_ai import RunContext
 from tavily import AsyncTavilyClient
 
 from src.config.config import get_settings
@@ -131,7 +132,7 @@ agent = get_settings().get_agent(
 
 
 @agent.instructions
-async def get_agent_instructions() -> str:
+async def get_agent_instructions(ctx:RunContext[NewsAgentDeps]) -> str:
     prompt = """
     # ROLE
     You are the Macro & Regulatory News Agent inside a specialized
@@ -156,8 +157,22 @@ async def get_agent_instructions() -> str:
       nothing relevant was found, say so plainly rather than stretching an
       unrelated headline to fit.
     - Current date is {current_date}
+    - Language of your response {language}
+    
     """
-    return cleandoc(prompt).format(current_date=current_date())
+    if ctx.deps.background:
+        prompt += cleandoc(
+            """
+
+            # BACKGROUND
+            Context the Orchestrator judged relevant. The task itself stays
+            authoritative — use this only to disambiguate it:
+            {background}
+            """
+        ).format(background=ctx.deps.background)
+    return cleandoc(prompt).format(
+        current_date=current_date(),
+        language=ctx.deps.language)
 
 
 @agent.tool_plain
