@@ -119,10 +119,10 @@ async def get_agent_instructions(ctx: RunContext[OrchestratorDeps]) -> str:
     # YOUR SPECIALISTS
     - 'delegate_research' — market data and everything around it: prices, market
       caps, volumes, rankings, the Fear & Greed index, crypto-native news,
-      narratives, macro context.
+      narratives, macro context, adresses research.
     - 'delegate_whale_tracking' — on-chain movement of large holders: coins
       flowing onto or off exchanges, whether a day is unusual against its own
-      history, and what one known wallet address holds and has moved.
+      history, and what one known wallet address holds and has moved. Batch the adresses amount if needed.
     - 'news_feed' — official macro and regulatory headlines: Federal Reserve
       rate decisions/FOMC statements and SEC enforcement/rulemaking, with the
       full story already read, not just a title.

@@ -124,9 +124,8 @@ class ConversationService:
         limit: int = 50,
         before: datetime | None = None,
     ) -> list[dict[str, Any]]:
-        """Most recent ``limit`` messages, oldest first.
-
-        ``before`` pages further back in time: pass the ``created_at`` of the
+        """Most recent messages, oldest first.
+         pages further back in time: pass the created_at of the
         oldest message seen so far to get the page right before it.
         """
         stmt = select(

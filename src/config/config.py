@@ -55,6 +55,8 @@ class AgentUtilsSettings(BaseSettings):
         }
     )
     rss_urls: list[str]=["https://www.federalreserve.gov/feeds/press_all.xml", "https://www.sec.gov/news/pressreleases.rss"]
+    wallet_batch_max_addresses: int = 10
+    wallet_batch_max_concurrency: int = 5
     news_keywords: list[str] = Field(
         default_factory=lambda: [
             "crypto", "bitcoin", "ethereum", "digital asset", "stablecoin",
@@ -94,6 +96,20 @@ class DatabaseSettings(BaseSettings):
         )
 
 
+class RateLimitSettings(BaseSettings):
+    """In-memory, per-IP request caps (slowapi). Not shared across processes."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="RATE_LIMIT_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    conversation: str = "10/minute"
+    history: str = "30/minute"
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -101,8 +117,10 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    api_key: str = "test-token"
     logging_settings: LoggingSettings = Field(default_factory=LoggingSettings)
     flow_settings: FlowSettings = Field(default_factory=FlowSettings)
+    rate_limit_settings: RateLimitSettings = Field(default_factory=RateLimitSettings)
     agent_utils_settings: AgentUtilsSettings = Field(default_factory=AgentUtilsSettings)
     agent_settings: dict[str, AgentSettings] = Field(
         default_factory=lambda: {

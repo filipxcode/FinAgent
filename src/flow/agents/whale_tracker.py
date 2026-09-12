@@ -7,7 +7,8 @@ from enum import StrEnum
 from inspect import cleandoc
 from math import ceil
 from statistics import fmean, pstdev
-from typing import Any
+from typing import Annotated, Any
+import asyncio
 
 from pydantic import BaseModel, Field
 from pydantic_ai import RunContext
@@ -248,6 +249,9 @@ class WalletAccount(BaseModel):
     )
     error: str | None = None
 
+class WalletLookup(BaseModel):
+    address: str
+    chain: Chain
 
 @dataclass
 class WhaleTrackerDeps:
@@ -398,37 +402,57 @@ async def _bitcoin_wallet(address: str, tx_limit: int) -> WalletAccount:
     account.error = "; ".join(e for e in (stats_error, txs_error) if e) or None
     return account
 
+_MAX_BATCH_ADDRESSES = get_settings().agent_utils_settings.wallet_batch_max_addresses
+_MAX_CONCURRENCY = get_settings().agent_utils_settings.wallet_batch_max_concurrency
+
+async def fetch_wallets(semaphore: asyncio.Semaphore, address: WalletLookup, tx_limit: int) -> tuple[WalletAccount | None, str | None]:
+    async with semaphore:
+        try:
+            if address.chain is Chain.BITCOIN:
+                wallet_acc = await _bitcoin_wallet(address.address, tx_limit)
+            else:
+                wallet_acc = await _evm_wallet(address.address, address.chain, tx_limit)
+            return wallet_acc, None
+        except Exception:
+            logger.exception("Error during wallet lookup address=%s", address)
+            return None, f"Error during address = {address}"
 
 @agent.tool_plain
 async def wallet_activity(
-    address: str,
-    chain: Chain = Chain.ETHEREUM,
-    tx_limit: int = 10,
-) -> WalletAccount:
-    R"""Inspect what one specific wallet holds and has recently moved.
+    addresses: Annotated[list[WalletLookup], Field(max_length=_MAX_BATCH_ADDRESSES)],
+    tx_limit: int = 8,
+) -> tuple[list[WalletAccount], str]:
+    R"""Inspect what one or more known wallets hold and have recently moved.
 
-    Use this when an address is already known — verifying a reported whale move,
-    or following an entity's wallet. For "what are whales doing" in general,
-    with no address in hand, use 'coinmetrics_whale_flows' instead.
+    Use this when at least one address is already known — verifying a reported
+    whale move, or following an entity's wallet(s). For "what are whales doing"
+    in general, with no address in hand, use 'coinmetrics_whale_flows' instead.
 
     Args:
-        address: The wallet to inspect, on the chain given below.
-        chain: Which chain the address belongs to. Must match the address
-            format: Bitcoin addresses start with 1, 3 or bc1, every other chain
-            uses 0x… addresses.
-        tx_limit: How many recent transactions to return (default 10).
+        addresses: Up to _MAX_BATCH_ADDRESSES (address, chain) pairs to inspect.
+            chain must match the address format: Bitcoin addresses start with
+            1, 3 or bc1, every other chain here uses 0x… addresses. Lookups run
+            concurrently, capped at _MAX_CONCURRENCY in flight.
+        tx_limit: How many recent transactions to return per wallet (default 8).
 
-    Balances and values are in the chain's own currency, named in
+    Balances and values are in each chain's own currency, named in
     'native_symbol' — never assume USD. On Bitcoin a transaction has many
     senders and recipients, so 'value' is its largest output (the actual
     payment, excluding change) and the addresses are the dominant parties, not
-    the only ones. On any API failure the response comes back with 'error' set
-    instead of raising.
+    the only ones. A wallet that fails is dropped from the returned list and
+    named instead in the second, error-summary return value - it never raises.
     """
-    if chain is Chain.BITCOIN:
-        return await _bitcoin_wallet(address, tx_limit)
-    return await _evm_wallet(address, chain, tx_limit)
-
+    semaphore = asyncio.Semaphore(_MAX_CONCURRENCY)
+    tasks = [fetch_wallets(semaphore, a, tx_limit) for a in addresses]
+    tasks_processed = await asyncio.gather(*tasks)
+    errors = ""
+    wallets = []
+    for t in tasks_processed:
+        if t[0]:
+            wallets.append(t[0])
+        else:
+            errors += f"\t{t[1]}"
+    return wallets, errors
 
 def _series(rows: list[dict[str, Any]], metric: WhaleMetric) -> list[tuple[date, float]]:
     """Pull one metric out of the mixed rows, dropping days it is missing from."""
