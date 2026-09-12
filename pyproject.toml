@@ -6,6 +6,7 @@ dependencies = [
     "asyncpg>=0.31.0",
     "cryptopanic>=0.1.0",
     "fastapi>=0.141.1",
+    "feedparser>=6.0.14",
     "pydantic-ai>=2.21.0",
     "pydantic-settings>=2.14.2",
     "sqlalchemy[asyncio]>=2.0.51",
