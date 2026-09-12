@@ -58,11 +58,11 @@ app.add_middleware(
 @app.post("/conversation/{conversation_id}", response_model=ConversationRequestOutput)
 async def conversation(
     request: ConversationRequestInput,
-    # auth_token: Annotated[str, Depends(get_auth_token)],
+    auth_token: Annotated[str, Depends(get_auth_token)],
     service: Annotated[ConversationService, Depends(get_service)],
     conversation_id: ConversationIdFieldT | None = None,
 ):
-    # _ = auth_token
+    _ = auth_token
     if conversation_id is None:
         conversation_id = str(uuid4())
 
