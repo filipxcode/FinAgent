@@ -11,9 +11,8 @@ from src.db.postgres import PostgresClient, get_postgres_client
 
 async def get_auth_token(
 	authorization: Annotated[str | None, Header(alias="Authorization")] = None,
-	settings: Annotated[Settings, Depends(get_settings)] = None,  # type: ignore[assignment]
 ) -> str:
-	expected_token = settings.api_key
+	expected_token = get_settings().api_key
 
 	if authorization is None:
 		raise HTTPException(

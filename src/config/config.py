@@ -96,20 +96,6 @@ class DatabaseSettings(BaseSettings):
         )
 
 
-class RateLimitSettings(BaseSettings):
-    """In-memory, per-IP request caps (slowapi). Not shared across processes."""
-
-    model_config = SettingsConfigDict(
-        env_prefix="RATE_LIMIT_",
-        env_file=".env",
-        env_file_encoding="utf-8",
-        extra="ignore",
-    )
-
-    conversation: str = "10/minute"
-    history: str = "30/minute"
-
-
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -117,10 +103,8 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    api_key: str = "test-token"
     logging_settings: LoggingSettings = Field(default_factory=LoggingSettings)
     flow_settings: FlowSettings = Field(default_factory=FlowSettings)
-    rate_limit_settings: RateLimitSettings = Field(default_factory=RateLimitSettings)
     agent_utils_settings: AgentUtilsSettings = Field(default_factory=AgentUtilsSettings)
     agent_settings: dict[str, AgentSettings] = Field(
         default_factory=lambda: {
@@ -157,6 +141,7 @@ class Settings(BaseSettings):
         }
     )
     db_settings: DatabaseSettings = Field(default_factory=DatabaseSettings)
+    api_key: str
 
     def get_agent_settings(self, agent_key: str) -> AgentSettings:
         try:
