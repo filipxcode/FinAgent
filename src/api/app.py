@@ -53,6 +53,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.get("/health")
+async def health() -> dict[str, str]:
+    return {"status": "ok"}
+
 
 @app.post("/conversation")
 @app.post("/conversation/{conversation_id}", response_model=ConversationRequestOutput)

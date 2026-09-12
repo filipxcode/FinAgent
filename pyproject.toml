@@ -12,3 +12,12 @@ dependencies = [
     "tavily-python>=0.7.27",
     "uvicorn[standard]>=0.52.0",
 ]
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+    "pytest>=9.1.1",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
