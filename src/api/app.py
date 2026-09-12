@@ -10,24 +10,25 @@ load_dotenv()
 from datetime import datetime
 
 from fastapi import Depends, FastAPI, Query
+from fastapi.middleware.cors import CORSMiddleware
 
-from src.api.logger import configure_logging
 from src.api.deps import get_auth_token, get_postgres_client, get_service
+from src.api.logger import configure_logging
 from src.api.types import (
     ConversationIdFieldT,
     ConversationRequestInput,
     ConversationRequestOutput,
     HistoryResponse,
 )
-from src.db.postgres import ConversationService
 from src.config.config import Settings
-from src.flow.types import FlowInput, ConversationState, BasicMessage
+from src.db.postgres import ConversationService
+from src.flow.types import BasicMessage, ConversationState, FlowInput
 
 settings = Settings()
 configure_logging(settings.logging_settings)
 
 logger = logging.getLogger("finagent.api")
-state = ConversationState()
+
 from src.flow.flow import Flow
 
 flow = Flow()
@@ -45,17 +46,23 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.post("/conversation")
 @app.post("/conversation/{conversation_id}", response_model=ConversationRequestOutput)
 async def conversation(
     request: ConversationRequestInput,
-    #auth_token: Annotated[str, Depends(get_auth_token)],
+    # auth_token: Annotated[str, Depends(get_auth_token)],
     service: Annotated[ConversationService, Depends(get_service)],
     conversation_id: ConversationIdFieldT | None = None,
 ):
-    #_ = auth_token
+    # _ = auth_token
     if conversation_id is None:
         conversation_id = str(uuid4())
 
@@ -65,13 +72,16 @@ async def conversation(
         role="user",
         content=request.conversation,
     )
-    state.conversation_id = conversation_id
+    state = ConversationState(conversation_id=conversation_id)
     try:
         message_history = await service.get_history(
             conversation_id=conversation_id, limit=20
         )
         message_history = (
-            [BasicMessage(conversation_id=conversation_id, **m) for m in message_history]
+            [
+                BasicMessage(conversation_id=conversation_id, **m)
+                for m in message_history
+            ]
             if message_history
             else []
         )
@@ -89,7 +99,9 @@ async def conversation(
         )
         response = await flow.run(input=input)
         reply_content = (
-            response.result.response.content if response.result.response else "No response"
+            response.result.response.content
+            if response.result.response
+            else "No response"
         )
         await service.save_message(
             conversation_id=conversation_id,
@@ -109,9 +121,10 @@ async def conversation(
             status="failed",
         )
 
+
 @app.get("/history", response_model=HistoryResponse)
 async def history(
-    #auth_token: Annotated[str, Depends(get_auth_token)],
+    # auth_token: Annotated[str, Depends(get_auth_token)],
     service: Annotated[ConversationService, Depends(get_service)],
     conversation_id: ConversationIdFieldT,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
@@ -123,13 +136,19 @@ async def history(
     message_history = await service.get_history(
         conversation_id=conversation_id, limit=limit, before=before
     )
-    messages = [BasicMessage(conversation_id=conversation_id, **m) for m in message_history]
+    messages = [
+        BasicMessage(conversation_id=conversation_id, **m) for m in message_history
+    ]
     next_cursor = messages[0].created_at if len(messages) == limit else None
     return HistoryResponse(messages=messages, next_cursor=next_cursor)
-        
+
+
 if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run(
-        app, host="0.0.0.0", port=8000, log_level=settings.logging_settings.level.lower()
+        app,
+        host="0.0.0.0",
+        port=8000,
+        log_level=settings.logging_settings.level.lower(),
     )
