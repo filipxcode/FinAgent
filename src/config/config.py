@@ -30,6 +30,7 @@ class LoggingSettings(BaseSettings):
 class FlowSettings(BaseSettings):
     max_steps: int = 32
     retry_max_attempts: int = 3
+    conversation_rate_limit: str = "20/minute"
 
 
 class AgentUtilsSettings(BaseSettings):
