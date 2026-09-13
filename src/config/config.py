@@ -138,6 +138,11 @@ class Settings(BaseSettings):
                 name="answer",
                 model="gpt-4.1-mini",
             ),
+            "history_summarizer": AgentSettings(
+                provider="openai",
+                name="history_summarizer",
+                model="gpt-4.1-mini",
+            ),
         }
     )
     db_settings: DatabaseSettings = Field(default_factory=DatabaseSettings)

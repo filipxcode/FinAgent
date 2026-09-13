@@ -7,9 +7,10 @@ from typing import Any, cast
 
 from pydantic import BaseModel
 
-from src.flow.agents.answer import AnswerInput, AnswerNode, AnswerNodeOutput
-from src.flow.agents.orchestrator import OrchestratorInput, OrchestratorNode, OrchestratorNodeOutput
-from src.flow.agents.precheck import PrecheckInput, PrecheckNode, PrecheckNodeOutput
+from src.flow.agents.answer import AnswerInput, AnswerNode
+from src.flow.agents.history_summarizer import HistorySummarizerInput, HistorySummarizerNode
+from src.flow.agents.orchestrator import OrchestratorInput, OrchestratorNode
+from src.flow.agents.precheck import PrecheckInput, PrecheckNode
 from src.flow.types import (
     BasicMessage,
     ConversationState,
@@ -23,12 +24,23 @@ from src.flow.types import (
 
 logger = logging.getLogger(__name__)
 
+# Keep the most recent _RECENT_HISTORY_SIZE raw turns for every node; once
+# there are at least _SUMMARIZE_TRIGGER turns (a few more than that, so we
+# don't re-summarize on every single message once the window is full), fold
+# the turns just older than the kept window into the rolling summary - at
+# most _MAX_SUMMARIZE_BATCH of them per call, so one summarizer call never
+# grows unbounded regardless of how much history is fetched.
+_RECENT_HISTORY_SIZE = 20
+_SUMMARIZE_TRIGGER = 25
+_MAX_SUMMARIZE_BATCH = 25
+
 
 @dataclass(kw_only=True)
 class Flow:
     precheck: PrecheckNode = field(default_factory=PrecheckNode)
     orchestrator: OrchestratorNode = field(default_factory=OrchestratorNode)
     answer: AnswerNode = field(default_factory=AnswerNode)
+    history_summarizer: HistorySummarizerNode = field(default_factory=HistorySummarizerNode)
 
     async def run(self, input: FlowInput) -> FlowRunResult:
         started_at = datetime.now(UTC)
@@ -106,6 +118,21 @@ class Flow:
         transport each agent's model client uses (see config.Settings.get_agent).
         """
         steps: list[FlowStepResult] = []
+
+        if len(message_history) >= _SUMMARIZE_TRIGGER:
+            older, message_history = (
+                message_history[-(_RECENT_HISTORY_SIZE + _MAX_SUMMARIZE_BATCH) : -_RECENT_HISTORY_SIZE],
+                message_history[-_RECENT_HISTORY_SIZE:],
+            )
+            summarizer_input = HistorySummarizerInput(
+                message_history=older, previous_summary=state.summary
+            )
+            _summarizer_output, step, state = await self._run_node(
+                self.history_summarizer, summarizer_input, state
+            )
+            steps.append(step)
+            if step.status == "failed":
+                return steps, state
 
         precheck_input = PrecheckInput(
             current_message=current_message, message_history=message_history
