@@ -20,9 +20,6 @@ from src.flow.types import (
     NodeRunResult,
 )
 
-# Target length for the rolling summary: long enough that a later turn keeps
-# the coins/wallets/figures/dates it might still need, short enough that
-# re-sending it on every future turn stays cheap.
 _SUMMARY_MIN_CHARS = 400
 _SUMMARY_MAX_CHARS = 1200
 
