@@ -30,6 +30,7 @@ class LoggingSettings(BaseSettings):
 class FlowSettings(BaseSettings):
     max_steps: int = 32
     retry_max_attempts: int = 3
+    conversation_rate_limit: str = "20/minute"
 
 
 class AgentUtilsSettings(BaseSettings):
@@ -136,6 +137,11 @@ class Settings(BaseSettings):
             "answer": AgentSettings(
                 provider="openai",
                 name="answer",
+                model="gpt-4.1-mini",
+            ),
+            "history_summarizer": AgentSettings(
+                provider="openai",
+                name="history_summarizer",
                 model="gpt-4.1-mini",
             ),
         }

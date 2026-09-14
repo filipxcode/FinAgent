@@ -9,6 +9,7 @@ dependencies = [
     "feedparser>=6.0.14",
     "pydantic-ai>=2.21.0",
     "pydantic-settings>=2.14.2",
+    "slowapi>=0.1.10",
     "sqlalchemy[asyncio]>=2.0.51",
     "tavily-python>=0.7.27",
     "uvicorn[standard]>=0.52.0",

@@ -9,9 +9,11 @@ load_dotenv()
 
 from datetime import datetime
 
-from fastapi import Depends, FastAPI, Query
+from fastapi import Depends, FastAPI, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 from src.api.deps import get_auth_token, get_postgres_client, get_service
 from src.api.logger import configure_logging
 from src.api.types import (
@@ -33,6 +35,8 @@ from src.flow.flow import Flow
 
 flow = Flow()
 
+limiter = Limiter(key_func=get_remote_address)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -46,6 +50,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -60,8 +66,10 @@ async def health() -> dict[str, str]:
 
 @app.post("/conversation")
 @app.post("/conversation/{conversation_id}", response_model=ConversationRequestOutput)
+@limiter.limit(settings.flow_settings.conversation_rate_limit)
 async def conversation(
-    request: ConversationRequestInput,
+    request: Request,
+    payload: ConversationRequestInput,
     auth_token: Annotated[str, Depends(get_auth_token)],
     service: Annotated[ConversationService, Depends(get_service)],
     conversation_id: ConversationIdFieldT | None = None,
@@ -74,7 +82,7 @@ async def conversation(
     await service.save_message(
         conversation_id=conversation_id,
         role="user",
-        content=request.conversation,
+        content=payload.conversation,
     )
     state = ConversationState(conversation_id=conversation_id)
     try:
@@ -92,7 +100,7 @@ async def conversation(
         current_message = BasicMessage(
             conversation_id=conversation_id,
             role="user",
-            content=request.conversation,
+            content=payload.conversation,
         )
 
         input = FlowInput(
