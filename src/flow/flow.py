@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, cast
@@ -24,12 +25,7 @@ from src.flow.types import (
 
 logger = logging.getLogger(__name__)
 
-# Keep the most recent _RECENT_HISTORY_SIZE raw turns for every node; once
-# there are at least _SUMMARIZE_TRIGGER turns (a few more than that, so we
-# don't re-summarize on every single message once the window is full), fold
-# the turns just older than the kept window into the rolling summary - at
-# most _MAX_SUMMARIZE_BATCH of them per call, so one summarizer call never
-# grows unbounded regardless of how much history is fetched.
+
 _RECENT_HISTORY_SIZE = 20
 _SUMMARIZE_TRIGGER = 25
 _MAX_SUMMARIZE_BATCH = 25
@@ -43,82 +39,29 @@ class Flow:
     history_summarizer: HistorySummarizerNode = field(default_factory=HistorySummarizerNode)
 
     async def run(self, input: FlowInput) -> FlowRunResult:
-        started_at = datetime.now(UTC)
-        history = input.message_history[:-1]
-        steps, final_state = await self._run_flow(
-            input.current_message, history, input.state
-        )
-        finished_at = datetime.now(UTC)
-        duration_ms = (finished_at - started_at).total_seconds() * 1000
-        total_cost = sum(s.cost for s in steps if s.cost is not None) or None
-        result = (
-            steps[-1].output.model_copy(update={"updated_state": final_state})
-            if steps
-            else NodeOutput(updated_state=final_state)
-        )
-
-        # Debug logging: print analytics params from all steps
-        logger.debug("=" * 60)
-        logger.debug("FLOW EXECUTION TRACE")
-        logger.debug("=" * 60)
-        for i, step in enumerate(steps, 1):
-            logger.debug(
-                "Step %d - node=%s status=%s latency_ms=%.2f cost=%.4f",
-                i,
-                step.node_name,
-                step.status,
-                step.duration_ms,
-                step.cost or 0.0,
-            )
-            if step.analytics_params:
-                logger.debug("  analytics: %s", step.analytics_params)
-            if step.error:
-                logger.debug("  error: %s", step.error)
-        logger.debug("=" * 60)
-
-        # Build analytics dict for FlowRunResult - includes full reasoning, input, output
-        analytics = {
-            "node_count": len(steps),
-            "nodes": [s.node_name for s in steps],
-            "status": steps[-1].status if steps else "no_steps",
-            "total_latency_ms": duration_ms,
-            "step_latency_ms": [s.duration_ms for s in steps],
-            "total_cost": total_cost,
-            "step_costs": [s.cost for s in steps],
-            "step_reasoning": [
-                s.analytics_params.get("reasoning", "N/A") for s in steps
-            ],
-            "step_input": [s.analytics_params.get("input", "N/A") for s in steps],
-            "step_output": [
-                s.output.response.content if s.output.response else "no_response"
-                for s in steps
-            ],
-            "step_tokens": [s.analytics_params for s in steps],
-        }
-
-        return FlowRunResult(
-            result=result,
-            started_at=started_at,
-            finished_at=finished_at,
-            duration_ms=duration_ms,
-            total_cost=total_cost,
-            analytics=analytics,
-        )
+        """Drain stream() and hand back only its terminal result."""
+        result: FlowRunResult | None = None
+        async for item in self.stream(input):
+            if isinstance(item, FlowRunResult):
+                result = item
+        if result is None:
+            raise RuntimeError("Flow.stream did not yield a terminal FlowRunResult")
+        return result
 
     async def _run_flow(
         self,
         current_message: BasicMessage,
         message_history: list[BasicMessage],
         state: ConversationState,
-    ) -> tuple[list[FlowStepResult], ConversationState]:
+    ) -> AsyncIterator[FlowStepResult]:
         """precheck -> small_talk / not_allowed => stop here
                      -> allowed                  => orchestrator
 
         No retry loop here - transient failures are retried on the HTTP
         transport each agent's model client uses (see config.Settings.get_agent).
-        """
-        steps: list[FlowStepResult] = []
 
+        Yields every step as it finishes - accumulating them is stream()'s job.
+        """
         if len(message_history) >= _SUMMARIZE_TRIGGER:
             older, message_history = (
                 message_history[-(_RECENT_HISTORY_SIZE + _MAX_SUMMARIZE_BATCH) : -_RECENT_HISTORY_SIZE],
@@ -130,9 +73,9 @@ class Flow:
             _summarizer_output, step, state = await self._run_node(
                 self.history_summarizer, summarizer_input, state
             )
-            steps.append(step)
+            yield step
             if step.status == "failed":
-                return steps, state
+                return
 
         precheck_input = PrecheckInput(
             current_message=current_message, message_history=message_history
@@ -140,16 +83,16 @@ class Flow:
         precheck_output, step, state = await self._run_node(
             self.precheck, precheck_input, state
         )
-        steps.append(step)
+        yield step
         if step.status == "failed":
-            return steps, state
+            return
 
         if precheck_output.status in (
             PrecheckStatus.SMALL_TALK,
             PrecheckStatus.NOT_ALLOWED,
         ):
             logger.info("Precheck stopped the flow: status=%s", precheck_output.status)
-            return steps, state
+            return
 
         orchestrator_input = OrchestratorInput(
             current_message=current_message,
@@ -159,9 +102,9 @@ class Flow:
         orchestrator_output, step, state = await self._run_node(
             self.orchestrator, orchestrator_input, state
         )
-        steps.append(step)
+        yield step
         if step.status == "failed":
-            return steps, state
+            return
 
         answer_input = AnswerInput(
             current_message=current_message,
@@ -172,8 +115,7 @@ class Flow:
             tool_limitations=orchestrator_output.tool_limitations,
         )
         _answer_output, step, state = await self._run_node(self.answer, answer_input, state)
-        steps.append(step)
-        return steps, state
+        yield step
 
     async def _run_node[TNodeOutput: NodeOutput](
         self, node: NodeABC[Any, TNodeOutput], input: BaseModel, state: ConversationState
@@ -231,3 +173,69 @@ class Flow:
                 error=str(exc),
             )
             return fallback_output, step, failed_state
+
+    async def stream(
+        self, input: FlowInput
+    ) -> AsyncIterator[FlowStepResult | FlowRunResult]:
+        """Yield each step as it finishes, then one terminal FlowRunResult.
+        """
+        started_at = datetime.now(UTC)
+        history = input.message_history[:-1]
+        steps: list[FlowStepResult] = []
+        async for step in self._run_flow(input.current_message, history, input.state):
+            steps.append(step)
+            yield step
+        finished_at = datetime.now(UTC)
+        duration_ms = (finished_at - started_at).total_seconds() * 1000
+        total_cost = sum(s.cost for s in steps if s.cost is not None) or None
+        # last step carries the final state - no re-stamping needed here.
+        result = (
+            steps[-1].output if steps else NodeOutput(updated_state=input.state)
+        )
+
+        # Debug logging: print analytics params from all steps
+        logger.debug("=" * 60)
+        logger.debug("FLOW EXECUTION TRACE")
+        logger.debug("=" * 60)
+        for i, step in enumerate(steps, 1):
+            logger.debug(
+                "Step %d - node=%s status=%s latency_ms=%.2f cost=%.4f",
+                i,
+                step.node_name,
+                step.status,
+                step.duration_ms,
+                step.cost or 0.0,
+            )
+            if step.analytics_params:
+                logger.debug("  analytics: %s", step.analytics_params)
+            if step.error:
+                logger.debug("  error: %s", step.error)
+        logger.debug("=" * 60)
+
+        analytics = {
+            "node_count": len(steps),
+            "nodes": [s.node_name for s in steps],
+            "status": steps[-1].status if steps else "no_steps",
+            "total_latency_ms": duration_ms,
+            "step_latency_ms": [s.duration_ms for s in steps],
+            "total_cost": total_cost,
+            "step_costs": [s.cost for s in steps],
+            "step_reasoning": [
+                s.analytics_params.get("reasoning", "N/A") for s in steps
+            ],
+            "step_input": [s.analytics_params.get("input", "N/A") for s in steps],
+            "step_output": [
+                s.output.response.content if s.output.response else "no_response"
+                for s in steps
+            ],
+            "step_tokens": [s.analytics_params for s in steps],
+        }
+
+        yield FlowRunResult(
+            result=result,
+            started_at=started_at,
+            finished_at=finished_at,
+            duration_ms=duration_ms,
+            total_cost=total_cost,
+            analytics=analytics,
+        )

@@ -2,6 +2,7 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Annotated
 from uuid import uuid4
+from collections.abc import AsyncIterable
 
 from dotenv import load_dotenv
 
@@ -11,6 +12,7 @@ from datetime import datetime
 
 from fastapi import Depends, FastAPI, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.sse import EventSourceResponse, ServerSentEvent
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
@@ -24,7 +26,8 @@ from src.api.types import (
 )
 from src.config.config import Settings
 from src.db.postgres import ConversationService
-from src.flow.types import BasicMessage, ConversationState, FlowInput
+from src.flow.types import BasicMessage
+from src.service.conversation import ConversationResult, run_conversation
 
 settings = Settings()
 configure_logging(settings.logging_settings)
@@ -75,68 +78,65 @@ async def conversation(
     conversation_id: ConversationIdFieldT | None = None,
 ):
     _ = auth_token
-    if conversation_id is None:
-        conversation_id = str(uuid4())
-
-    logger.info("Conversation request for conversation_id=%s", conversation_id)
-    await service.save_message(
-        conversation_id=conversation_id,
-        role="user",
-        content=payload.conversation,
+    result: ConversationResult | None = None
+    async for item in run_conversation(
+        flow=flow,
+        service=service,
+        conversation_id=conversation_id or str(uuid4()),
+        text=payload.conversation,
+    ):
+        if isinstance(item, ConversationResult):
+            result = item
+    if result is None:
+        raise RuntimeError("run_conversation did not yield a ConversationResult")
+    return ConversationRequestOutput(
+        conversation=result.content,
+        conversation_id=result.conversation_id,
+        status=result.status,
     )
-    state = ConversationState(conversation_id=conversation_id)
-    try:
-        message_history = await service.get_history(
-            conversation_id=conversation_id, limit=20
-        )
-        message_history = (
-            [
-                BasicMessage(conversation_id=conversation_id, **m)
-                for m in message_history
-            ]
-            if message_history
-            else []
-        )
-        current_message = BasicMessage(
-            conversation_id=conversation_id,
-            role="user",
-            content=payload.conversation,
-        )
 
-        input = FlowInput(
-            conversation_id=conversation_id,
-            current_message=current_message,
-            message_history=message_history,
-            state=state,
-        )
-        response = await flow.run(input=input)
-        reply_content = (
-            response.result.response.content
-            if response.result.response
-            else "No response"
-        )
-        await service.save_message(
-            conversation_id=conversation_id,
-            role="assistant",
-            content=reply_content,
-        )
-        return ConversationRequestOutput(
-            conversation=reply_content,
-            conversation_id=conversation_id,
-            status="completed",
-        )
-    except Exception as e:
-        logger.error("Error during running a flow %e", e)
-        return ConversationRequestOutput(
-            conversation="Sorry, something went wrong processing your request.",
-            conversation_id=conversation_id,
-            status="failed",
-        )
 
+@app.post("/stream/conversation", response_class=EventSourceResponse)
+@app.post("/stream/conversation/{conversation_id}", response_class=EventSourceResponse)
+@limiter.limit(settings.flow_settings.conversation_rate_limit)
+async def conversation_stream(
+    request: Request,
+    payload: ConversationRequestInput,
+    auth_token: Annotated[str, Depends(get_auth_token)],
+    service: Annotated[ConversationService, Depends(get_service)],
+    conversation_id: ConversationIdFieldT | None = None,
+) -> AsyncIterable[ServerSentEvent]:
+    """Same turn as /conversation, reported step by step over SSE.
+    """
+    _ = auth_token
+    async for item in run_conversation(
+        flow=flow,
+        service=service,
+        conversation_id=conversation_id or str(uuid4()),
+        text=payload.conversation,
+    ):
+        if isinstance(item, ConversationResult):
+            yield ServerSentEvent(
+                event="done" if item.status == "completed" else "error",
+                data=ConversationRequestOutput(
+                    conversation=item.content,
+                    conversation_id=item.conversation_id,
+                    status=item.status,
+                ),
+            )
+        else:
+            yield ServerSentEvent(
+                event="step",
+                data={
+                    "node": item.node_name,
+                    "status": item.status,
+                    "duration_ms": item.duration_ms,
+                },
+            )
 
 @app.get("/history", response_model=HistoryResponse)
 async def history(
-    # auth_token: Annotated[str, Depends(get_auth_token)],
+    auth_token: Annotated[str, Depends(get_auth_token)],
     service: Annotated[ConversationService, Depends(get_service)],
     conversation_id: ConversationIdFieldT,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,

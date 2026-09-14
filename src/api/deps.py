@@ -11,23 +11,22 @@ from src.db.postgres import PostgresClient, get_postgres_client
 
 async def get_auth_token(
 	authorization: Annotated[str | None, Header(alias="Authorization")] = None,
+	x_api_key: Annotated[str | None, Header(alias="x-api-key")] = None,
 ) -> str:
 	expected_token = get_settings().api_key
 
-	if authorization is None:
+	token = None
+	if x_api_key:
+		token = x_api_key
+	elif authorization:
+		token = authorization.removeprefix("Bearer ").strip()
+
+	if not token:
 		raise HTTPException(
 			status_code=status.HTTP_401_UNAUTHORIZED,
 			detail="Missing authorization token",
 		)
 
-	prefix = "Bearer "
-	if not authorization.startswith(prefix):
-		raise HTTPException(
-			status_code=status.HTTP_401_UNAUTHORIZED,
-			detail="Invalid authorization scheme",
-		)
-
-	token = authorization.removeprefix(prefix).strip()
 	if token != expected_token:
 		raise HTTPException(
 			status_code=status.HTTP_401_UNAUTHORIZED,
