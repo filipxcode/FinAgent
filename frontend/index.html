@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FinAgent Chat</title>
+    <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar for Settings -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <h2>FinAgent</h2>
+            </div>
+            <div class="sidebar-content">
+                <div class="input-group">
+                    <label for="apiKey">API Key</label>
+                    <input type="password" id="apiKey" placeholder="Enter API Key" autocomplete="off" />
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Chat Area -->
+        <main class="chat-area">
+            <header class="chat-header">
+                <h3>Conversation</h3>
+                <div class="header-actions">
+                    <button id="newChatBtn" class="btn outline">New Chat</button>
+                </div>
+            </header>
+
+            <div class="chat-history" id="chatHistory">
+                <div class="message system-msg">
+                    <div class="msg-content">Welcome to FinAgent! Please set your API key in the sidebar to start chatting.</div>
+                </div>
+            </div>
+
+            <div class="chat-input-container">
+                <form id="chatForm">
+                    <input type="text" id="chatInput" placeholder="Type your message..." autocomplete="off" />
+                    <button type="submit" id="sendBtn" class="btn primary">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <line x1="22" y1="2" x2="11" y2="13"></line>
+                            <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                        </svg>
+                    </button>
+                </form>
+            </div>
+        </main>
+    </div>
+    <script src="app.js"></script>
+</body>
+</html>
