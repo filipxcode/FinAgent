@@ -123,9 +123,11 @@ async def get_agent_instructions(ctx: RunContext[OrchestratorDeps]) -> str:
     - 'delegate_whale_tracking' — on-chain movement of large holders: coins
       flowing onto or off exchanges, whether a day is unusual against its own
       history, and what one known wallet address holds and has moved. Batch the adresses amount if needed.
-    - 'news_feed' — official macro and regulatory headlines: Federal Reserve
-      rate decisions/FOMC statements and SEC enforcement/rulemaking, with the
-      full story already read, not just a title.
+    - 'news_feed' — official press releases from exactly two sources: the
+      Federal Reserve (rate decisions, FOMC statements) and the SEC
+      (enforcement, rulemaking), with the full story already read, not just a
+      title. It sees nothing else - no Congress, no legislation, no other
+      agencies or countries, no media coverage.
 
     # HOW TO WORK
     - Answer directly, without delegating, when the question is about the
@@ -133,10 +135,22 @@ async def get_agent_instructions(ctx: RunContext[OrchestratorDeps]) -> str:
     - Delegate anything that needs fresh data. When a question spans both market
       data and on-chain movement, call both specialists in parallel rather than
       making one guess outside its area.
+    - Regulation and policy questions (bills, acts, Congress votes, agencies
+      other than the Fed/SEC, non-US regulators) go to 'delegate_research',
+      which searches the open web. When a question could also touch a Fed or
+      SEC release, call 'news_feed' and 'delegate_research' in parallel.
+    - Before telling the user nothing was found, make sure the web was
+      searched: if 'news_feed' comes back with low confidence or no relevant
+      headline, follow up with 'delegate_research' on the same topic.
     - Specialists see NO conversation history. Every 'task' you send must stand
       on its own: resolve "it", "that coin", "the same period" into explicit
       names, tickers and dates first. "And its volume?" is useless to them;
       "What is Solana's 24h trading volume in USD?" works.
+    - Anchor every task in time. Questions about when something starts, is
+      scheduled, happens or what its status is ("what time does X start",
+      "when is the vote", "is X live") are about the upcoming or current
+      occurrence relative to the current date, not about the event's history -
+      unless the user names a past date.
     - Never invent figures, dates, addresses or sources. Report only what a
       specialist actually returned, and keep the date it gave you.
     - Separate observation from interpretation, and say plainly when the data
@@ -247,12 +261,16 @@ async def delegate_whale_tracking(
 async def news_feed(ctx: RunContext[OrchestratorDeps], task: str, reason: str) -> NewsAgentOutput:
     R"""Delegate one self-contained macro/regulatory news task to the News Agent.
 
-    Covers Federal Reserve and SEC headlines - rate decisions, FOMC statements,
-    enforcement actions, rulemaking. The News Agent reads the full article
-    itself when a headline looks relevant, so its report already reflects the
-    actual story, not just a title - no need to follow up with
-    'delegate_research' for the same headline. For crypto-native news,
-    narratives or market data, use 'delegate_research' instead.
+    Covers only Federal Reserve and SEC press releases - rate decisions, FOMC
+    statements, enforcement actions, rulemaking. The News Agent reads the full
+    article itself when a headline looks relevant, so a confident report
+    already reflects the actual story. Legislation, Congress, other agencies,
+    crypto-native news, narratives and market data are outside these feeds -
+    use 'delegate_research' for them.
+
+    If the report has low confidence or found no relevant headline, the topic
+    may still be covered elsewhere - follow up with 'delegate_research' before
+    telling the user nothing was found.
 
     Args:
         task: A standalone news question. The agent sees none of this
