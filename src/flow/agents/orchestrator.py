@@ -102,7 +102,7 @@ ORCHESTRATOR_AGENT_KEY = "orchestrator"
 agent = get_settings().get_agent(
     ORCHESTRATOR_AGENT_KEY,
     deps_type=OrchestratorDeps,
-    output_type=OrchestratorAgentOutput,
+    output_type=str,
 )
 
 

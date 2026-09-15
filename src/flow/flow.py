@@ -193,12 +193,12 @@ class Flow:
             steps[-1].output if steps else NodeOutput(updated_state=input.state)
         )
 
-        # Debug logging: print analytics params from all steps
-        logger.debug("=" * 60)
-        logger.debug("FLOW EXECUTION TRACE")
-        logger.debug("=" * 60)
+        # Trace logging: print analytics params from all steps
+        logger.info("=" * 60)
+        logger.info("FLOW EXECUTION TRACE")
+        logger.info("=" * 60)
         for i, step in enumerate(steps, 1):
-            logger.debug(
+            logger.info(
                 "Step %d - node=%s status=%s latency_ms=%.2f cost=%.4f",
                 i,
                 step.node_name,
@@ -207,10 +207,10 @@ class Flow:
                 step.cost or 0.0,
             )
             if step.analytics_params:
-                logger.debug("  analytics: %s", step.analytics_params)
+                logger.info("  analytics: %s", step.analytics_params)
             if step.error:
-                logger.debug("  error: %s", step.error)
-        logger.debug("=" * 60)
+                logger.info("  error: %s", step.error)
+        logger.info("=" * 60)
 
         analytics = {
             "node_count": len(steps),
