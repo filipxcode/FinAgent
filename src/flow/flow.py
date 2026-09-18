@@ -5,7 +5,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, cast
-
+import asyncio
 from pydantic import BaseModel
 
 from src.flow.agents.answer import AnswerInput, AnswerNode
@@ -22,7 +22,7 @@ from src.flow.types import (
     NodeOutput,
     PrecheckStatus,
 )
-
+from src.flow.events import _queue
 logger = logging.getLogger(__name__)
 
 
@@ -62,6 +62,7 @@ class Flow:
 
         Yields every step as it finishes - accumulating them is stream()'s job.
         """
+        
         if len(message_history) >= _SUMMARIZE_TRIGGER:
             older, message_history = (
                 message_history[-(_RECENT_HISTORY_SIZE + _MAX_SUMMARIZE_BATCH) : -_RECENT_HISTORY_SIZE],
@@ -179,12 +180,23 @@ class Flow:
     ) -> AsyncIterator[FlowStepResult | FlowRunResult]:
         """Yield each step as it finishes, then one terminal FlowRunResult.
         """
+        
         started_at = datetime.now(UTC)
         history = input.message_history[:-1]
         steps: list[FlowStepResult] = []
-        async for step in self._run_flow(input.current_message, history, input.state):
-            steps.append(step)
-            yield step
+        queue = asyncio.Queue()
+        task = asyncio.create_task(self._queue_put(queue, input.current_message, history, input.state))
+        try:
+            while True:
+                item = await queue.get()
+                if item == object():
+                    break
+                if isinstance(item, FlowStepResult):
+                    steps.append(item)
+                yield item
+            await task
+        finally:
+            task.cancel()
         finished_at = datetime.now(UTC)
         duration_ms = (finished_at - started_at).total_seconds() * 1000
         total_cost = sum(s.cost for s in steps if s.cost is not None) or None
@@ -239,3 +251,9 @@ class Flow:
             total_cost=total_cost,
             analytics=analytics,
         )
+    async def _queue_put(self, queue: asyncio.Queue, current_message: BasicMessage, message_history: list[BasicMessage], state: ConversationState):
+        try:
+            async for step in self._run_flow(current_message, message_history, state):
+                queue.put_nowait(step)
+        finally:
+            queue.put_nowait(object())     
