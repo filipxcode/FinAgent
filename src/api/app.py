@@ -125,14 +125,8 @@ async def conversation_stream(
                 ),
             )
         else:
-            yield ServerSentEvent(
-                event="step",
-                data={
-                    "node": item.node_name,
-                    "status": item.status,
-                    "duration_ms": item.duration_ms,
-                },
-            )
+            yield ServerSentEvent(event=item.type, data=item.model_dump())
+
 
 @app.get("/history", response_model=HistoryResponse)
 async def history(

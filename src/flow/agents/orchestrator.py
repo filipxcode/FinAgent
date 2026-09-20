@@ -25,7 +25,7 @@ from src.flow.types import (
     NodeOutput,
     NodeRunResult,
 )
-from src.flow.events import DelegationEvent, emit
+from src.flow.events import delegation
 
 
 class OrchestratorInput(BaseModel):
@@ -198,18 +198,12 @@ async def delegate_research(
     Returns the report with its sources and a 0-1 confidence. Low confidence
     means the evidence was thin — say so rather than presenting it as settled.
     """
-    started = DelegationEvent(agent="researcher", status="started", task=task)
-    emit(started)
-    try:
+    with delegation("researcher", task):
         run = await researcher_agent.run(
             task,
             deps=ResearcherDeps(language=ctx.deps.language, background=background),
             usage=ctx.usage,
         )
-    except Exception:
-        emit(started.model_copy(update={"status": "failed"}))
-        raise
-    emit(started.model_copy(update={"status": "finished"}))
     ctx.deps.analytics_params.setdefault("delegations", []).append(
         {
             "agent": "researcher",
@@ -249,18 +243,12 @@ async def delegate_whale_tracking(
     reading is normally yesterday's. Keep the returned 'latest_date' in your
     answer and never present the figures as intraday.
     """
-    started = DelegationEvent(agent="whale_tracker", status="started", task=task)
-    emit(started)
-    try:
+    with delegation("whale_tracker", task):
         run = await whale_tracker_agent.run(
             task,
             deps=WhaleTrackerDeps(language=ctx.deps.language, background=background),
             usage=ctx.usage,
         )
-    except Exception:
-        emit(started.model_copy(update={"status": "failed"}))
-        raise
-    emit(started.model_copy(update={"status": "finished"}))
     ctx.deps.analytics_params.setdefault("delegations", []).append(
         {
             "agent": "whale_tracker",
@@ -297,18 +285,12 @@ async def news_feed(ctx: RunContext[OrchestratorDeps], task: str, reason: str) -
     means no relevant headline was found - say so rather than presenting it as
     settled.
     """
-    started = DelegationEvent(agent="news_agent", status="started", task=task)
-    emit(started)
-    try:
+    with delegation("news_agent", task):
         run = await news_agent.run(
             task,
             deps=NewsAgentDeps(language=ctx.deps.language),
             usage=ctx.usage
         )
-    except Exception:
-        emit(started.model_copy(update={"status": "failed"}))
-        raise
-    emit(started.model_copy(update={"status": "finished"}))
     ctx.deps.analytics_params.setdefault("delegations", []).append(
         {
             "agent": "news_agent",
