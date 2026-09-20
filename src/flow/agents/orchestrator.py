@@ -88,6 +88,10 @@ class OrchestratorNodeOutput(NodeOutput):
     task_result: str = "None"
     missing_informations: str = "None"
     tool_limitations: str = "None"
+    sources: list[str] = Field(
+        default_factory=list,
+        description="Web links the specialists cited this turn, each once.",
+    )
 
 
 @dataclass
@@ -97,6 +101,14 @@ class OrchestratorDeps:
     language: LanguageEnum = LanguageEnum.ENG
     message_history: list[BasicMessage] = field(default_factory=list)
     analytics_params: dict[str, Any] = field(default_factory=dict)
+    sources: list[str] = field(default_factory=list)
+
+
+def _add_sources(ctx: RunContext[OrchestratorDeps], sources: list[str]) -> None:
+    """Keep the links a specialist cited (not tool names it may list), once each."""
+    for source in sources:
+        if source.startswith(("http://", "https://")) and source not in ctx.deps.sources:
+            ctx.deps.sources.append(source)
 
 
 ORCHESTRATOR_AGENT_KEY = "orchestrator"
@@ -204,6 +216,7 @@ async def delegate_research(
             deps=ResearcherDeps(language=ctx.deps.language, background=background),
             usage=ctx.usage,
         )
+    _add_sources(ctx, run.output.sources)
     ctx.deps.analytics_params.setdefault("delegations", []).append(
         {
             "agent": "researcher",
@@ -291,6 +304,7 @@ async def news_feed(ctx: RunContext[OrchestratorDeps], task: str, reason: str) -
             deps=NewsAgentDeps(language=ctx.deps.language),
             usage=ctx.usage
         )
+    _add_sources(ctx, run.output.sources)
     ctx.deps.analytics_params.setdefault("delegations", []).append(
         {
             "agent": "news_agent",
@@ -343,6 +357,7 @@ class OrchestratorNode(NodeABC[OrchestratorInput, OrchestratorNodeOutput]):
                 task_result=recap.task_result,
                 missing_informations=recap.missing_informations,
                 tool_limitations=recap.tool_limitations,
+                sources=deps.sources,
             ),
             analytics_params=deps.analytics_params,
         )

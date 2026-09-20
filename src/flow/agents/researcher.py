@@ -9,6 +9,8 @@ from typing import Annotated, Any
 
 from pydantic import BaseModel, Field
 from pydantic_ai import RunContext
+from pydantic_ai.agent import AgentRunResult
+from pydantic_ai.messages import ToolReturnPart
 from tavily import AsyncTavilyClient
 
 from src.config.config import get_settings
@@ -269,6 +271,26 @@ async def tavily_search(query: str, max_results: int = 5) -> TavilySearchRespons
     ]
     answer = data.get("answer")
     return TavilySearchResponse(query=query, answer=answer, results=results)
+
+
+def tavily_urls(run: AgentRunResult[Any]) -> list[str]:
+    """URLs of the pages Tavily returned during a run, in order, without repeats."""
+    urls: dict[str, None] = {}
+    for message in run.all_messages():
+        for part in getattr(message, "parts", ()):
+            if not (isinstance(part, ToolReturnPart) and part.tool_name == "tavily_search"):
+                continue
+            content = part.content
+            results = (
+                content.results
+                if isinstance(content, TavilySearchResponse)
+                else (content or {}).get("results", [])
+            )
+            for result in results:
+                url = result.url if isinstance(result, TavilyResult) else result.get("url")
+                if url:
+                    urls.setdefault(url)
+    return list(urls)
 
 
 @agent.tool_plain

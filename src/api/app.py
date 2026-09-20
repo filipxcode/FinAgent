@@ -93,6 +93,7 @@ async def conversation(
         conversation=result.content,
         conversation_id=result.conversation_id,
         status=result.status,
+        sources=result.run.sources if result.run else [],
     )
 
 
@@ -122,6 +123,7 @@ async def conversation_stream(
                     conversation=item.content,
                     conversation_id=item.conversation_id,
                     status=item.status,
+                    sources=item.run.sources if item.run else [],
                 ),
             )
         else:

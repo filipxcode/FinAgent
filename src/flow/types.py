@@ -144,6 +144,10 @@ class FlowRunResult(BaseModel):
     finished_at: datetime | None = None
     duration_ms: float | None = None
     total_cost: float | None = None
+    sources: list[str] = Field(
+        default_factory=list,
+        description="Web links the specialists cited while answering, if any.",
+    )
     # analytics: summary of all steps - reasoning, input, output, latency, cost per node
     analytics: dict[str, Any] = Field(
         default_factory=dict,

@@ -10,7 +10,11 @@ from pydantic import BaseModel
 
 from src.flow.agents.answer import AnswerInput, AnswerNode
 from src.flow.agents.history_summarizer import HistorySummarizerInput, HistorySummarizerNode
-from src.flow.agents.orchestrator import OrchestratorInput, OrchestratorNode
+from src.flow.agents.orchestrator import (
+    OrchestratorInput,
+    OrchestratorNode,
+    OrchestratorNodeOutput,
+)
 from src.flow.agents.precheck import PrecheckInput, PrecheckNode
 from src.flow.types import (
     BasicMessage,
@@ -251,8 +255,14 @@ class Flow:
             "step_tokens": [s.analytics_params for s in steps],
         }
 
+        sources = next(
+            (s.output.sources for s in steps if isinstance(s.output, OrchestratorNodeOutput)),
+            [],
+        )
+
         yield FlowRunResult(
             result=result,
+            sources=sources,
             started_at=started_at,
             finished_at=finished_at,
             duration_ms=duration_ms,

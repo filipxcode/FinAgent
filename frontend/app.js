@@ -5,6 +5,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const chatHistory = document.getElementById('chatHistory');
     const apiKeyInput = document.getElementById('apiKey');
     const newChatBtn = document.getElementById('newChatBtn');
+    const chatList = document.getElementById('chatList');
+    const chatTitle = document.getElementById('chatTitle');
     const sendBtn = document.getElementById('sendBtn');
 
     const API_BASE = 'http://localhost:9000';
@@ -28,8 +30,17 @@ document.addEventListener('DOMContentLoaded', () => {
     };
     const MARKS = { running: '', finished: '✓', failed: '✕' };
 
-    let currentConversationId = null;
+    const CHATS_KEY = 'finagent_chats';
+    const ACTIVE_CHAT_KEY = 'finagent_active_chat';
+    const HISTORY_PAGE_SIZE = 50;
+    const TITLE_MAX_LENGTH = 40;
+
+    // The backend keeps messages per conversation_id but has no "list my chats"
+    // endpoint, so this browser remembers which conversations it started.
+    let chats = readChats(); // [{ id, title, updatedAt }], most recently used first
+    let currentConversationId = localStorage.getItem(ACTIVE_CHAT_KEY); // null = a fresh chat with no id yet
     let activeStream = null; // AbortController of the turn in flight
+    let viewSeq = 0; // bumped on every chat switch so late responses for a previous chat are dropped
 
     // Load API Key from localStorage
     const savedApiKey = localStorage.getItem('finagent_api_key');
@@ -41,16 +52,213 @@ document.addEventListener('DOMContentLoaded', () => {
         localStorage.setItem('finagent_api_key', e.target.value);
     });
 
-    newChatBtn.addEventListener('click', () => {
-        // Drop the in-flight stream, otherwise its events land in a cleared view.
-        if (activeStream) activeStream.abort();
-        currentConversationId = null;
-        chatHistory.innerHTML = `
-            <div class="message system-msg">
-                <div class="msg-content">Started a new conversation.</div>
-            </div>
-        `;
+    // A key entered after the page restored a chat: load what was waiting for it.
+    apiKeyInput.addEventListener('change', () => {
+        if (apiKeyInput.value.trim() && currentConversationId && !activeStream) {
+            openChat(currentConversationId);
+        }
     });
+
+    newChatBtn.addEventListener('click', showNewChat);
+
+    /* --------------------------------------------------------------- chats */
+
+    function readChats() {
+        try {
+            const parsed = JSON.parse(localStorage.getItem(CHATS_KEY) || '[]');
+            return Array.isArray(parsed)
+                ? parsed.filter((c) => c && typeof c.id === 'string' && typeof c.title === 'string')
+                : [];
+        } catch {
+            return [];
+        }
+    }
+
+    function persistChats() {
+        try {
+            localStorage.setItem(CHATS_KEY, JSON.stringify(chats));
+        } catch {
+            /* storage full or blocked: the chat still works, it just won't be remembered */
+        }
+    }
+
+    function persistActiveChat() {
+        if (currentConversationId) localStorage.setItem(ACTIVE_CHAT_KEY, currentConversationId);
+        else localStorage.removeItem(ACTIVE_CHAT_KEY);
+    }
+
+    function newConversationId() {
+        return typeof crypto !== 'undefined' && crypto.randomUUID
+            ? crypto.randomUUID()
+            : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    }
+
+    function titleFrom(message) {
+        const oneLine = message.replace(/\s+/g, ' ').trim();
+        return oneLine.length > TITLE_MAX_LENGTH ? `${oneLine.slice(0, TITLE_MAX_LENGTH - 1)}…` : oneLine;
+    }
+
+    /* Register the chat on first use and float it to the top of the list. */
+    function touchChat(id, firstMessage) {
+        const existing = chats.find((c) => c.id === id);
+        const chat = existing || { id, title: titleFrom(firstMessage) };
+        chat.updatedAt = Date.now();
+        chats = [chat, ...chats.filter((c) => c.id !== id)];
+        persistChats();
+        persistActiveChat();
+        renderChatList();
+        renderHeader();
+    }
+
+    function renderHeader() {
+        const chat = chats.find((c) => c.id === currentConversationId);
+        chatTitle.textContent = chat ? chat.title : 'New conversation';
+    }
+
+    function renderChatList() {
+        chatList.replaceChildren();
+        if (!chats.length) {
+            const empty = document.createElement('div');
+            empty.className = 'chat-list-empty';
+            empty.textContent = 'No chats yet. Send a message to start one.';
+            chatList.appendChild(empty);
+            return;
+        }
+
+        for (const chat of chats) {
+            const item = document.createElement('div');
+            item.className = `chat-item${chat.id === currentConversationId ? ' active' : ''}`;
+
+            const open = document.createElement('button');
+            open.type = 'button';
+            open.className = 'chat-item-title';
+            open.textContent = chat.title;
+            open.title = chat.title;
+            if (chat.id === currentConversationId) open.setAttribute('aria-current', 'true');
+            open.addEventListener('click', () => {
+                if (chat.id !== currentConversationId) openChat(chat.id);
+            });
+
+            const remove = document.createElement('button');
+            remove.type = 'button';
+            remove.className = 'chat-item-delete';
+            remove.textContent = '✕';
+            remove.setAttribute('aria-label', `Remove chat: ${chat.title}`);
+            remove.addEventListener('click', () => removeChat(chat.id));
+
+            item.append(open, remove);
+            chatList.appendChild(item);
+        }
+    }
+
+    function leaveCurrentView() {
+        // Drop the in-flight stream, otherwise its events land in another chat's view.
+        if (activeStream) activeStream.abort();
+        return ++viewSeq;
+    }
+
+    function showNewChat() {
+        leaveCurrentView();
+        currentConversationId = null;
+        persistActiveChat();
+        chatHistory.replaceChildren(buildMessage('system', 'Started a new conversation.'));
+        renderChatList();
+        renderHeader();
+        chatInput.focus();
+    }
+
+    async function openChat(id) {
+        const seq = leaveCurrentView();
+        currentConversationId = id;
+        persistActiveChat();
+        renderChatList();
+        renderHeader();
+
+        if (!apiKeyInput.value.trim()) {
+            chatHistory.replaceChildren(buildMessage('system', 'Enter your API key in the sidebar to load this chat.'));
+            return;
+        }
+
+        const loading = buildMessage('system', 'Loading messages…');
+        chatHistory.replaceChildren(loading);
+        try {
+            const page = await fetchHistory(id);
+            if (seq !== viewSeq) return;
+            if (!page.messages.length) {
+                chatHistory.replaceChildren(buildMessage('system', 'No messages in this chat yet.'));
+                return;
+            }
+            chatHistory.replaceChildren(historyFragment(page, seq));
+            scrollToBottom();
+        } catch (error) {
+            if (seq !== viewSeq) return;
+            chatHistory.replaceChildren(buildMessage('system', `Could not load this chat: ${error.message}`));
+        }
+    }
+
+    function removeChat(id) {
+        const chat = chats.find((c) => c.id === id);
+        if (!chat) return;
+        // There is no delete endpoint: this only forgets the chat in this browser.
+        if (!confirm(`Remove "${chat.title}" from your chat list?\nIts messages stay on the server.`)) return;
+
+        chats = chats.filter((c) => c.id !== id);
+        persistChats();
+        if (id === currentConversationId) showNewChat();
+        else renderChatList();
+    }
+
+    async function fetchHistory(id, before) {
+        const params = new URLSearchParams({ conversation_id: id, limit: String(HISTORY_PAGE_SIZE) });
+        if (before) params.set('before', before); // URLSearchParams escapes the '+' of the UTC offset
+        const response = await fetch(`${API_BASE}/history?${params}`, {
+            headers: { 'x-api-key': apiKeyInput.value.trim() },
+        });
+        if (!response.ok) {
+            const body = await response.json().catch(() => ({}));
+            throw new Error(body.detail || body.error || `Server error: ${response.status}`);
+        }
+        return response.json();
+    }
+
+    /* One page of history, oldest first, topped by a button for the page before it. */
+    function historyFragment(page, seq) {
+        const fragment = document.createDocumentFragment();
+
+        if (page.next_cursor) {
+            const older = document.createElement('button');
+            older.type = 'button';
+            older.className = 'load-older';
+            older.textContent = 'Load earlier messages';
+            older.addEventListener('click', () => loadOlder(older, page.next_cursor, seq));
+            fragment.appendChild(older);
+        }
+        for (const message of page.messages) {
+            fragment.appendChild(buildMessage(message.role, message.content));
+        }
+        return fragment;
+    }
+
+    async function loadOlder(button, cursor, seq) {
+        button.disabled = true;
+        button.textContent = 'Loading…';
+        try {
+            const page = await fetchHistory(currentConversationId, cursor);
+            if (seq !== viewSeq) return;
+
+            // Keep the message the reader was looking at where it is.
+            const heightBefore = chatHistory.scrollHeight;
+            const topBefore = chatHistory.scrollTop;
+            button.replaceWith(historyFragment(page, seq));
+            chatHistory.style.scrollBehavior = 'auto';
+            chatHistory.scrollTop = topBefore + (chatHistory.scrollHeight - heightBefore);
+            chatHistory.style.scrollBehavior = '';
+        } catch (error) {
+            if (seq !== viewSeq) return;
+            button.disabled = false;
+            button.textContent = `Retry loading earlier messages (${error.message})`;
+        }
+    }
 
     /* ---------------------------------------------------------------- SSE */
 
@@ -111,10 +319,8 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    async function openStream(message, apiKey, signal) {
-        const url = currentConversationId
-            ? `${API_BASE}/stream/conversation/${encodeURIComponent(currentConversationId)}`
-            : `${API_BASE}/stream/conversation`;
+    async function openStream(conversationId, message, apiKey, signal) {
+        const url = `${API_BASE}/stream/conversation/${encodeURIComponent(conversationId)}`;
 
         const response = await fetch(url, {
             method: 'POST',
@@ -137,7 +343,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     /* ------------------------------------------------------------------ UI */
 
-    function appendMessage(role, content, steps) {
+    function buildMessage(role, content, steps, sources) {
         const msgDiv = document.createElement('div');
         msgDiv.className = `message ${role}-msg`;
 
@@ -146,13 +352,61 @@ document.addEventListener('DOMContentLoaded', () => {
         contentDiv.textContent = content;
         msgDiv.appendChild(contentDiv);
 
+        const sourcesEl = buildSources(sources);
+        if (sourcesEl) contentDiv.appendChild(sourcesEl);
+
         if (steps && steps.length) {
             contentDiv.appendChild(buildTrace(steps));
         }
+        return msgDiv;
+    }
 
+    function appendMessage(role, content, steps, sources) {
+        const msgDiv = buildMessage(role, content, steps, sources);
         chatHistory.appendChild(msgDiv);
         scrollToBottom();
         return msgDiv;
+    }
+
+    /* Links the agents cited. They come off the web, so only http(s) becomes a link. */
+    function buildSources(sources) {
+        const links = [];
+        for (const raw of sources || []) {
+            let url;
+            try {
+                url = new URL(raw);
+            } catch {
+                continue;
+            }
+            if (url.protocol !== 'http:' && url.protocol !== 'https:') continue;
+
+            const a = document.createElement('a');
+            a.href = url.href;
+            a.target = '_blank';
+            a.rel = 'noopener noreferrer';
+            a.title = url.href;
+            a.textContent = url.hostname.replace(/^www\./, '') + (url.pathname === '/' ? '' : url.pathname);
+            links.push(a);
+        }
+        if (!links.length) return null;
+
+        const box = document.createElement('div');
+        box.className = 'sources';
+
+        const title = document.createElement('div');
+        title.className = 'sources-title';
+        title.textContent = `Sources (${links.length})`;
+
+        const list = document.createElement('ol');
+        list.className = 'sources-list';
+        for (const a of links) {
+            const li = document.createElement('li');
+            li.appendChild(a);
+            list.appendChild(li);
+        }
+
+        box.append(title, list);
+        return box;
     }
 
     function appendProgress() {
@@ -362,6 +616,10 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
+        // A fresh chat gets its id here; the backend takes any id in the path.
+        if (!currentConversationId) currentConversationId = newConversationId();
+        const conversationId = currentConversationId;
+
         chatInput.value = '';
         setBusy(true);
         appendMessage('user', message);
@@ -372,7 +630,9 @@ document.addEventListener('DOMContentLoaded', () => {
         activeStream = controller;
 
         try {
-            const response = await openStream(message, apiKey, controller.signal);
+            const response = await openStream(conversationId, message, apiKey, controller.signal);
+            // The server took the turn: only now does it belong in the chat list.
+            touchChat(conversationId, message);
             let terminal = null;
 
             for await (const { event, data } of readSSE(response)) {
@@ -388,11 +648,13 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!terminal) {
                 appendMessage('system', 'Connection closed before the answer arrived.');
             } else {
-                if (terminal.data.conversation_id) {
-                    currentConversationId = terminal.data.conversation_id;
-                }
                 if (terminal.event === 'done') {
-                    appendMessage('assistant', terminal.data.conversation || 'No response content.', tracker.steps);
+                    appendMessage(
+                        'assistant',
+                        terminal.data.conversation || 'No response content.',
+                        tracker.steps,
+                        terminal.data.sources,
+                    );
                 } else {
                     appendMessage('system', terminal.data.conversation || 'The run failed.');
                 }
@@ -403,8 +665,18 @@ document.addEventListener('DOMContentLoaded', () => {
                 appendMessage('system', `Error: ${error.message}`);
             }
         } finally {
-            activeStream = null;
+            if (activeStream === controller) activeStream = null;
             setBusy(false);
         }
     });
+
+    /* ---------------------------------------------------------------- boot */
+
+    if (currentConversationId && !chats.some((c) => c.id === currentConversationId)) {
+        currentConversationId = null;
+        persistActiveChat();
+    }
+    renderChatList();
+    renderHeader();
+    if (currentConversationId) openChat(currentConversationId);
 });
