@@ -2,20 +2,27 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime
-from enum import StrEnum
 from inspect import cleandoc
-from typing import Annotated, Any
+from typing import Annotated
 
 from pydantic import BaseModel, Field
 from pydantic_ai import RunContext
-from pydantic_ai.agent import AgentRunResult
-from pydantic_ai.messages import ToolReturnPart
 from tavily import AsyncTavilyClient
 
 from src.config.config import get_settings
 from src.flow.agents.http import get_json
 from src.flow.agents.prompt import current_date
+from src.flow.agents.types import (
+    AltMeSort,
+    CoinDetailResponse,
+    CryptoMarketResponse,
+    FearGreedEntry,
+    FearGreedResponse,
+    MarketOverview,
+    TavilyResult,
+    TavilySearchResponse,
+)
+from src.flow.agents.utils import parse_coin
 from src.flow.types import LanguageEnum
 
 logger = logging.getLogger(__name__)
@@ -60,108 +67,6 @@ class ResearcherAgentOutput(BaseModel):
         """),
     )
 
-
-class TavilyResult(BaseModel):
-    title: str
-    url: str
-    content: str
-    score: float | None = None
-
-
-class TavilySearchResponse(BaseModel):
-    query: str
-    answer: str | None = None
-    results: list[TavilyResult] = Field(default_factory=list)
-    error: str | None = None
-
-
-class AltMeSort(StrEnum):
-    ID = "id"
-    RANK = "rank"
-    NAME = "name"
-    PRICE = "price"
-    VOLUME_24H = "volume_24h"
-    PERCENT_CHANGE_1H = "percent_change_1h"
-    PERCENT_CHANGE_24H = "percent_change_24h"
-    PERCENT_CHANGE_7D = "percent_change_7d"
-    CIRCULATING_SUPPLY = "circulating_supply"
-
-
-class CoinTicker(BaseModel):
-    """One coin, with its USD quote flattened onto the top level."""
-
-    id: int
-    name: str
-    symbol: str
-    website_slug: str = Field(description="Identifier to pass to 'exact_crypto_tool'.")
-    rank: int | None = None
-    price_usd: float | None = None
-    volume_24h_usd: float | None = None
-    market_cap_usd: float | None = None
-    percentage_change_1h: float | None = None
-    percentage_change_24h: float | None = None
-    percentage_change_7d: float | None = None
-    circulating_supply: float | None = None
-    max_supply: float | None = None
-    last_updated: datetime | None = None
-
-
-class MarketOverview(BaseModel):
-    """Aggregate state of the whole crypto market, in USD."""
-
-    total_market_cap_usd: float | None = None
-    total_volume_24h_usd: float | None = None
-    bitcoin_percentage_of_market_cap: float | None = None
-    active_cryptocurrencies: int | None = None
-    last_updated: datetime | None = None
-
-
-class CryptoMarketResponse(BaseModel):
-    market: MarketOverview | None = None
-    coins: list[CoinTicker] = Field(default_factory=list)
-    error: str | None = None
-
-
-class CoinDetailResponse(BaseModel):
-    coin: CoinTicker | None = None
-    error: str | None = None
-
-
-class FearGreedEntry(BaseModel):
-    value: int = Field(description="0 = extreme fear, 100 = extreme greed.")
-    value_classification: str = Field(
-        description="Extreme Fear / Fear / Neutral / Greed / Extreme Greed.",
-    )
-    timestamp: datetime
-
-
-class FearGreedResponse(BaseModel):
-    entries: list[FearGreedEntry] = Field(
-        default_factory=list,
-        description="Newest first; one entry per day.",
-    )
-    error: str | None = None
-
-
-def _parse_coin(raw: dict[str, Any]) -> CoinTicker:
-    """Map one raw alternative.me ticker entry onto 'CoinTicker'."""
-    quote = (raw.get("quotes") or {}).get("USD") or {}
-    return CoinTicker(
-        id=raw["id"],
-        name=raw.get("name", ""),
-        symbol=raw.get("symbol", ""),
-        website_slug=raw.get("website_slug", ""),
-        rank=raw.get("rank"),
-        price_usd=quote.get("price"),
-        volume_24h_usd=quote.get("volume_24h"),
-        market_cap_usd=quote.get("market_cap"),
-        percentage_change_1h=quote.get("percentage_change_1h"),
-        percentage_change_24h=quote.get("percentage_change_24h"),
-        percentage_change_7d=quote.get("percentage_change_7d"),
-        circulating_supply=raw.get("circulating_supply"),
-        max_supply=raw.get("max_supply"),
-        last_updated=raw.get("last_updated"),
-    )
 
 @dataclass
 class ResearcherDeps:
@@ -273,26 +178,6 @@ async def tavily_search(query: str, max_results: int = 5) -> TavilySearchRespons
     return TavilySearchResponse(query=query, answer=answer, results=results)
 
 
-def tavily_urls(run: AgentRunResult[Any]) -> list[str]:
-    """URLs of the pages Tavily returned during a run, in order, without repeats."""
-    urls: dict[str, None] = {}
-    for message in run.all_messages():
-        for part in getattr(message, "parts", ()):
-            if not (isinstance(part, ToolReturnPart) and part.tool_name == "tavily_search"):
-                continue
-            content = part.content
-            results = (
-                content.results
-                if isinstance(content, TavilySearchResponse)
-                else (content or {}).get("results", [])
-            )
-            for result in results:
-                url = result.url if isinstance(result, TavilyResult) else result.get("url")
-                if url:
-                    urls.setdefault(url)
-    return list(urls)
-
-
 @agent.tool_plain
 async def base_crypto_tool(
     top_k_crypto: Annotated[int, Field(ge=1, le=50)] = 5,
@@ -324,7 +209,7 @@ async def base_crypto_tool(
         f"{url}/v2/global/", params={"convert": "USD"}
     )
 
-    coins = [_parse_coin(raw) for raw in (coins_data or {}).get("data", [])]
+    coins = [parse_coin(raw) for raw in (coins_data or {}).get("data", [])]
 
     market: MarketOverview | None = None
     if raw_market := (market_data or {}).get("data"):
@@ -368,7 +253,7 @@ async def exact_crypto_tool(website_slug: str) -> CoinDetailResponse:
     entries = list((data or {}).get("data", {}).values())
     if not entries:
         return CoinDetailResponse(error=f"no coin found for slug '{website_slug}'")
-    return CoinDetailResponse(coin=_parse_coin(entries[0]))
+    return CoinDetailResponse(coin=parse_coin(entries[0]))
 
 
 @agent.tool_plain

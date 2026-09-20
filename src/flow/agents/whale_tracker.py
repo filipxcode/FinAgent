@@ -3,11 +3,8 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
-from enum import StrEnum
 from inspect import cleandoc
-from math import ceil
-from statistics import fmean, pstdev
-from typing import Annotated, Any
+from typing import Annotated
 import asyncio
 
 from pydantic import BaseModel, Field
@@ -16,12 +13,18 @@ from pydantic_ai import RunContext
 from src.config.config import get_settings
 from src.flow.agents.http import get_json
 from src.flow.agents.prompt import current_date
+from src.flow.agents.types import (
+    Lookback,
+    WalletAccount,
+    WalletLookup,
+    WhaleAsset,
+    WhaleFlowResponse,
+    WhaleMetric,
+)
+from src.flow.agents.utils import METRIC_CODE, fetch_wallets, metric_series, metric_trend
 from src.flow.types import LanguageEnum
 
 logger = logging.getLogger(__name__)
-
-WEI_PER_ETH = 1e18
-SATOSHI_PER_BTC = 1e8
 
 
 class WhaleTrackerAgentOutput(BaseModel):
@@ -55,29 +58,6 @@ class WhaleTrackerAgentOutput(BaseModel):
     )
 
 
-class WhaleAsset(StrEnum):
-    BTC = "btc"
-    ETH = "eth"
-
-
-class Lookback(StrEnum):
-    """How far back the comparison baseline reaches.
-
-    This does not change which day is reported - the newest day is always
-    reported. It sets what that day is measured against, so "is today unusual
-    compared to the last two months" is '60d'. Short windows react fast
-    but call ordinary weekly swings unusual; long windows only flag moves that
-    are rare on that timescale.
-    """
-
-    WEEK = "7d"
-    MONTH = "30d"
-    TWO_MONTHS = "60d"
-    QUARTER = "90d"
-    HALF_YEAR = "180d"
-    YEAR = "1y"
-
-
 _LOOKBACK_DAYS: dict[Lookback, int] = {
     Lookback.WEEK: 7,
     Lookback.MONTH: 30,
@@ -88,170 +68,12 @@ _LOOKBACK_DAYS: dict[Lookback, int] = {
 }
 
 
-class WhaleMetric(StrEnum):
-    """On-chain measurements of where large holders are moving their coins.
-
-    Large holders have to use exchanges to sell, so coins moving onto exchanges
-    is the earliest visible sign of intent to sell, and coins leaving is a sign
-    of moving to long-term storage. What each value measures:
-
-    EXCHANGE_INFLOW_USD
-        Value sent to exchange wallets that day. A spike means holders are
-        positioning to sell — this is the main early-warning signal.
-    EXCHANGE_OUTFLOW_USD
-        Value withdrawn from exchanges that day. A spike means coins are being
-        moved into self-custody, which usually means holding rather than selling.
-    COINS_HELD_ON_EXCHANGES
-        Total coins sitting on exchanges. Read the direction, not the level:
-        a falling trend is accumulation, a rising trend is building sell-side
-        supply. Slower and more reliable than daily flows.
-    ACTIVE_ADDRESSES
-        Distinct addresses active that day. Use it to tell a whale-specific move
-        apart from general network-wide activity.
-    TRANSFER_COUNT
-        On-chain transfers that day. Same purpose as active addresses: baseline
-        context showing whether the whole chain got busier.
-    """
-
-    EXCHANGE_INFLOW_USD = "exchange_inflow_usd"
-    EXCHANGE_OUTFLOW_USD = "exchange_outflow_usd"
-    COINS_HELD_ON_EXCHANGES = "coins_held_on_exchanges"
-    ACTIVE_ADDRESSES = "active_addresses"
-    TRANSFER_COUNT = "transfer_count"
-
-
-# Descriptive enum values keep the tool schema readable; these are the provider
-# ids they translate to on the wire.
-_METRIC_CODE: dict[WhaleMetric, str] = {
-    WhaleMetric.EXCHANGE_INFLOW_USD: "FlowInExUSD",
-    WhaleMetric.EXCHANGE_OUTFLOW_USD: "FlowOutExUSD",
-    WhaleMetric.COINS_HELD_ON_EXCHANGES: "SplyExNtv",
-    WhaleMetric.ACTIVE_ADDRESSES: "AdrActCnt",
-    WhaleMetric.TRANSFER_COUNT: "TxTfrCnt",
-}
-
 _DEFAULT_METRICS: list[WhaleMetric] = [
     WhaleMetric.EXCHANGE_INFLOW_USD,
     WhaleMetric.EXCHANGE_OUTFLOW_USD,
     WhaleMetric.COINS_HELD_ON_EXCHANGES,
 ]
 
-
-class MetricBucket(BaseModel):
-    """Mean value over one slice of the window, for reading the trend shape."""
-
-    start: date
-    end: date
-    mean: float
-
-
-class MetricTrend(BaseModel):
-    """One metric's newest reading, measured against its own recent history."""
-
-    metric: WhaleMetric
-    latest: float | None = Field(default=None, description="Newest daily value.")
-    latest_date: date | None = None
-    window_mean: float | None = Field(
-        default=None, description="Average over the baseline window."
-    )
-    window_min: float | None = None
-    window_max: float | None = None
-    pct_vs_window_mean: float | None = Field(
-        default=None,
-        description="How far the newest value sits above the window average; +150.0 means 2.5x it.",
-    )
-    zscore: float | None = Field(
-        default=None,
-        description=(
-            "Standard deviations from the window average. Between -2 and 2 is "
-            "normal variation; beyond that the day is a genuine outlier worth "
-            "reporting as unusual."
-        ),
-    )
-    buckets: list[MetricBucket] = Field(
-        default_factory=list,
-        description="The window in equal slices, oldest first, for reading trend direction.",
-    )
-
-
-class WhaleFlowResponse(BaseModel):
-    asset: WhaleAsset
-    lookback: Lookback
-    days: int = Field(description="Calendar days the baseline window covers.")
-    latest_date: date | None = Field(
-        default=None,
-        description="Day the newest readings belong to — usually yesterday, never today.",
-    )
-    net_exchange_flow_usd_latest: float | None = Field(
-        default=None,
-        description=(
-            "Inflow minus outflow on the newest day. Positive means coins moved "
-            "net onto exchanges (sell-side pressure), negative means net withdrawal."
-        ),
-    )
-    net_exchange_flow_usd_window: float | None = Field(
-        default=None,
-        description="The same net flow summed across the whole window, showing the longer trend.",
-    )
-    trends: list[MetricTrend] = Field(default_factory=list)
-    error: str | None = None
-
-
-class Chain(StrEnum):
-    """Chains a wallet can be inspected on.
-
-    Must match the address format: Bitcoin addresses start with 1, 3 or bc1,
-    every other chain here uses 0x… addresses.
-    """
-
-    BITCOIN = "bitcoin"
-    ETHEREUM = "ethereum"
-    BASE = "base"
-    ARBITRUM = "arbitrum"
-    OPTIMISM = "optimism"
-
-
-_NATIVE_SYMBOL: dict[Chain, str] = {
-    Chain.BITCOIN: "BTC",
-    Chain.ETHEREUM: "ETH",
-    Chain.BASE: "ETH",
-    Chain.ARBITRUM: "ETH",
-    Chain.OPTIMISM: "ETH",
-}
-
-
-class WalletTx(BaseModel):
-    hash: str
-    timestamp: datetime | None = None
-    value: float | None = Field(
-        default=None, description="Amount moved, in the chain's native currency."
-    )
-    from_address: str | None = None
-    to_address: str | None = None
-    from_label: str | None = Field(
-        default=None, description="Known name of the sender, when the explorer has one."
-    )
-    to_label: str | None = None
-
-
-class WalletAccount(BaseModel):
-    address: str
-    chain: Chain
-    native_symbol: str = Field(
-        description="Currency that 'balance' and every 'value' are denominated in."
-    )
-    label: str | None = Field(
-        default=None, description="Known name of this address, when the explorer has one."
-    )
-    balance: float | None = None
-    transactions: list[WalletTx] = Field(
-        default_factory=list, description="Most recent transactions, newest first."
-    )
-    error: str | None = None
-
-class WalletLookup(BaseModel):
-    address: str
-    chain: Chain
 
 @dataclass
 class WhaleTrackerDeps:
@@ -333,89 +155,9 @@ async def get_agent_instructions(ctx: RunContext[WhaleTrackerDeps]) -> str:
     return prompt
 
 
-async def _evm_wallet(address: str, chain: Chain, tx_limit: int) -> WalletAccount:
-    """Balance and recent transfers for an EVM address, via Blockscout."""
-    account = WalletAccount(
-        address=address, chain=chain, native_symbol=_NATIVE_SYMBOL[chain]
-    )
-    host = get_settings().agent_utils_settings.blockscout_urls[chain.value]
-    info, info_error = await get_json(f"{host}/api/v2/addresses/{address}")
-    tx_data, tx_error = await get_json(f"{host}/api/v2/addresses/{address}/transactions")
-
-    if balance := (info or {}).get("coin_balance"):
-        account.balance = int(balance) / WEI_PER_ETH
-    account.label = (info or {}).get("name")
-    confirmed = [
-        tx for tx in ((tx_data or {}).get("items") or []) if tx.get("block_number")
-    ]
-    for tx in confirmed[:tx_limit]:
-        sender = tx.get("from") or {}
-        recipient = tx.get("to") or {}
-        account.transactions.append(
-            WalletTx(
-                hash=tx.get("hash", ""),
-                timestamp=tx.get("timestamp"),
-                value=int(tx.get("value") or 0) / WEI_PER_ETH,
-                from_address=sender.get("hash"),
-                to_address=recipient.get("hash"),
-                from_label=sender.get("name"),
-                to_label=recipient.get("name"),
-            )
-        )
-
-    account.error = "; ".join(e for e in (info_error, tx_error) if e) or None
-    return account
-
-
-async def _bitcoin_wallet(address: str, tx_limit: int) -> WalletAccount:
-    """Balance and recent transfers for a Bitcoin address, via mempool.space."""
-    account = WalletAccount(
-        address=address,
-        chain=Chain.BITCOIN,
-        native_symbol=_NATIVE_SYMBOL[Chain.BITCOIN],
-    )
-    url = get_settings().agent_utils_settings.mempool_url
-    stats, stats_error = await get_json(f"{url}/address/{address}")
-    txs, txs_error = await get_json(f"{url}/address/{address}/txs")
-
-    if chain_stats := (stats or {}).get("chain_stats"):
-        funded = chain_stats.get("funded_txo_sum", 0)
-        spent = chain_stats.get("spent_txo_sum", 0)
-        account.balance = (funded - spent) / SATOSHI_PER_BTC
-
-    for tx in (txs or [])[:tx_limit]:
-        outputs = tx.get("vout") or []
-        payment = max(outputs, key=lambda out: out.get("value", 0), default={})
-        inputs = tx.get("vin") or []
-        sender = (inputs[0].get("prevout") or {}).get("scriptpubkey_address") if inputs else None
-        block_time = (tx.get("status") or {}).get("block_time")
-        account.transactions.append(
-            WalletTx(
-                hash=tx.get("txid", ""),
-                timestamp=datetime.fromtimestamp(block_time, tz=UTC) if block_time else None,
-                value=payment.get("value", 0) / SATOSHI_PER_BTC,
-                from_address=sender,
-                to_address=payment.get("scriptpubkey_address"),
-            )
-        )
-
-    account.error = "; ".join(e for e in (stats_error, txs_error) if e) or None
-    return account
-
 _MAX_BATCH_ADDRESSES = get_settings().agent_utils_settings.wallet_batch_max_addresses
 _MAX_CONCURRENCY = get_settings().agent_utils_settings.wallet_batch_max_concurrency
 
-async def fetch_wallets(semaphore: asyncio.Semaphore, address: WalletLookup, tx_limit: int) -> tuple[WalletAccount | None, str | None]:
-    async with semaphore:
-        try:
-            if address.chain is Chain.BITCOIN:
-                wallet_acc = await _bitcoin_wallet(address.address, tx_limit)
-            else:
-                wallet_acc = await _evm_wallet(address.address, address.chain, tx_limit)
-            return wallet_acc, None
-        except Exception:
-            logger.exception("Error during wallet lookup address=%s", address)
-            return None, f"Error during address = {address}"
 
 @agent.tool_plain
 async def wallet_activity(
@@ -453,56 +195,6 @@ async def wallet_activity(
         else:
             errors += f"\t{t[1]}"
     return wallets, errors
-
-def _series(rows: list[dict[str, Any]], metric: WhaleMetric) -> list[tuple[date, float]]:
-    """Pull one metric out of the mixed rows, dropping days it is missing from."""
-    points: list[tuple[date, float]] = []
-    for row in rows:
-        raw = row.get(_METRIC_CODE[metric])
-        if raw is None:
-            continue
-        try:
-            points.append((datetime.fromisoformat(row["time"]).date(), float(raw)))
-        except (ValueError, KeyError):
-            continue
-    return sorted(points)
-
-
-def _bucket(points: list[tuple[date, float]], count: int = 10) -> list[MetricBucket]:
-    """Compress a daily series into at most 'count' equal slices."""
-    if not points:
-        return []
-    size = max(1, ceil(len(points) / count))
-    return [
-        MetricBucket(
-            start=chunk[0][0],
-            end=chunk[-1][0],
-            mean=fmean(value for _, value in chunk),
-        )
-        for chunk in (points[i : i + size] for i in range(0, len(points), size))
-    ]
-
-
-def _trend(metric: WhaleMetric, points: list[tuple[date, float]]) -> MetricTrend:
-    """Turn a daily series into latest-vs-baseline statistics."""
-    trend = MetricTrend(metric=metric)
-    if not points:
-        return trend
-
-    values = [value for _, value in points]
-    latest_date, latest = points[-1]
-    mean = fmean(values)
-    spread = pstdev(values) if len(values) > 1 else 0.0
-
-    trend.latest = latest
-    trend.latest_date = latest_date
-    trend.window_mean = mean
-    trend.window_min = min(values)
-    trend.window_max = max(values)
-    trend.pct_vs_window_mean = (latest / mean - 1) * 100 if mean else None
-    trend.zscore = (latest - mean) / spread if spread else None
-    trend.buckets = _bucket(points)
-    return trend
 
 
 @agent.tool_plain
@@ -549,7 +241,7 @@ async def coinmetrics_whale_flows(
         f"{url}/timeseries/asset-metrics",
         params={
             "assets": asset.value,
-            "metrics": ",".join(_METRIC_CODE[metric] for metric in supported),
+            "metrics": ",".join(METRIC_CODE[metric] for metric in supported),
             "frequency": "1d",
             "start_time": start_time.date().isoformat(),
             "page_size": 10000,
@@ -564,8 +256,8 @@ async def coinmetrics_whale_flows(
         )
 
     rows = (data or {}).get("data", [])
-    series = {metric: _series(rows, metric) for metric in supported}
-    trends = [_trend(metric, series[metric]) for metric in supported]
+    series = {metric: metric_series(rows, metric) for metric in supported}
+    trends = [metric_trend(metric, series[metric]) for metric in supported]
 
     inflow = dict(series.get(WhaleMetric.EXCHANGE_INFLOW_USD, []))
     outflow = dict(series.get(WhaleMetric.EXCHANGE_OUTFLOW_USD, []))

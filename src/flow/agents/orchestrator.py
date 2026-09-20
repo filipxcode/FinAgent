@@ -12,6 +12,7 @@ from src.flow.agents.prompt import current_date
 from src.flow.agents.researcher import ResearcherAgentOutput, ResearcherDeps
 from src.flow.agents.researcher import agent as researcher_agent
 from src.flow.agents.usage import run_cost
+from src.flow.agents.utils import add_sources
 from src.flow.agents.whale_tracker import WhaleTrackerAgentOutput, WhaleTrackerDeps
 from src.flow.agents.whale_tracker import agent as whale_tracker_agent
 from src.flow.agents.news_agent import NewsAgentOutput, NewsAgentDeps
@@ -102,13 +103,6 @@ class OrchestratorDeps:
     message_history: list[BasicMessage] = field(default_factory=list)
     analytics_params: dict[str, Any] = field(default_factory=dict)
     sources: list[str] = field(default_factory=list)
-
-
-def _add_sources(ctx: RunContext[OrchestratorDeps], sources: list[str]) -> None:
-    """Keep the links a specialist cited (not tool names it may list), once each."""
-    for source in sources:
-        if source.startswith(("http://", "https://")) and source not in ctx.deps.sources:
-            ctx.deps.sources.append(source)
 
 
 ORCHESTRATOR_AGENT_KEY = "orchestrator"
@@ -216,7 +210,7 @@ async def delegate_research(
             deps=ResearcherDeps(language=ctx.deps.language, background=background),
             usage=ctx.usage,
         )
-    _add_sources(ctx, run.output.sources)
+    add_sources(ctx.deps.sources, run.output.sources)
     ctx.deps.analytics_params.setdefault("delegations", []).append(
         {
             "agent": "researcher",
@@ -304,7 +298,7 @@ async def news_feed(ctx: RunContext[OrchestratorDeps], task: str, reason: str) -
             deps=NewsAgentDeps(language=ctx.deps.language),
             usage=ctx.usage
         )
-    _add_sources(ctx, run.output.sources)
+    add_sources(ctx.deps.sources, run.output.sources)
     ctx.deps.analytics_params.setdefault("delegations", []).append(
         {
             "agent": "news_agent",
