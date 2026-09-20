@@ -261,6 +261,12 @@ body {
     color: var(--text-secondary);
 }
 
+.step-group {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
 .step-row {
     display: flex;
     align-items: baseline;
@@ -272,11 +278,13 @@ body {
 
 .step-mark {
     flex-shrink: 0;
+    width: 12px;
+    text-align: center;
     font-size: 0.75rem;
     line-height: 1;
 }
 
-.step-row.ok .step-mark {
+.step-row.finished .step-mark {
     color: #4ade80;
 }
 
@@ -285,14 +293,56 @@ body {
     color: #f87171;
 }
 
+/* Spinner while a step or delegation is still running */
+.step-row.running .step-mark {
+    align-self: center;
+    height: 10px;
+    width: 10px;
+    margin: 0 1px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+
+.step-row.running .step-name {
+    color: var(--text-primary);
+}
+
 .step-name {
-    flex-grow: 1;
+    flex: 0 0 auto;
+}
+
+/* What a delegation was asked to do; long tasks are cut, the row stays one line */
+.step-detail {
+    flex: 1 1 0;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 0.78rem;
+    opacity: 0.6;
 }
 
 .step-time {
     flex-shrink: 0;
+    margin-left: auto;
     font-variant-numeric: tabular-nums;
     opacity: 0.65;
+}
+
+/* Specialist calls sit under the step that made them */
+.delegations:not(:empty) {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-left: 5px;
+    padding-left: 12px;
+    border-left: 1px solid var(--border);
+}
+
+.delegation-row {
+    font-size: 0.8rem;
 }
 
 /* Collapsed trace kept under a finished answer */
@@ -328,7 +378,7 @@ body {
     color: var(--text-primary);
 }
 
-.trace .step-row {
+.trace .step-group {
     margin-top: 8px;
     padding-left: 14px;
 }
@@ -354,6 +404,12 @@ body {
 @keyframes bounce {
     0%, 80%, 100% { transform: scale(0); }
     40% { transform: scale(1); }
+}
+
+@keyframes spin {
+    to {
+        transform: rotate(360deg);
+    }
 }
 
 @keyframes fadeIn {
