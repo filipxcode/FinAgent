@@ -26,6 +26,10 @@ class ConversationRequestOutput(BaseModel):
     conversation_id: ConversationIdFieldT
     conversation: ConversationRequestOutputT
     status: ConversationStatusT
+    sources: list[str] = Field(
+        default_factory=list,
+        description="Web links the answer draws on, when the agents cited any.",
+    )
     debug: dict[str, Any] | None = Field(
         default=None,
         description=(

@@ -11,9 +11,9 @@ from src.flow.types import (
     BasicMessage,
     ConversationState,
     ConversationStatusT,
+    FlowEvent,
     FlowInput,
     FlowRunResult,
-    FlowStepResult,
 )
 
 logger = logging.getLogger(__name__)
@@ -38,7 +38,7 @@ async def run_conversation(
     service: ConversationService,
     conversation_id: str,
     text: str,
-) -> AsyncIterator[FlowStepResult | ConversationResult]:
+) -> AsyncIterator[FlowEvent | ConversationResult]:
     """Run one conversation turn: persist the user message, stream the flow,
     persist the reply.
     """
@@ -85,7 +85,6 @@ async def run_conversation(
         )
         reply = _FALLBACK_REPLY
     finally:
-        # None means we never got far enough to have anything to say.
         if reply is not None:
             await service.save_message(
                 conversation_id=conversation_id, role="assistant", content=reply

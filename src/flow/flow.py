@@ -5,24 +5,31 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, cast
-
+import asyncio
 from pydantic import BaseModel
 
 from src.flow.agents.answer import AnswerInput, AnswerNode
 from src.flow.agents.history_summarizer import HistorySummarizerInput, HistorySummarizerNode
-from src.flow.agents.orchestrator import OrchestratorInput, OrchestratorNode
+from src.flow.agents.orchestrator import (
+    OrchestratorInput,
+    OrchestratorNode,
+    OrchestratorNodeOutput,
+)
 from src.flow.agents.precheck import PrecheckInput, PrecheckNode
 from src.flow.types import (
     BasicMessage,
     ConversationState,
     FlowInput,
+    FlowEvent,
     FlowRunResult,
     FlowStepResult,
     NodeABC,
     NodeOutput,
     PrecheckStatus,
+    StepFinished,
+    StepStarted,
 )
-
+from src.flow.events import DONE, bind_queue, publish, step_scope
 logger = logging.getLogger(__name__)
 
 
@@ -62,6 +69,7 @@ class Flow:
 
         Yields every step as it finishes - accumulating them is stream()'s job.
         """
+        
         if len(message_history) >= _SUMMARIZE_TRIGGER:
             older, message_history = (
                 message_history[-(_RECENT_HISTORY_SIZE + _MAX_SUMMARIZE_BATCH) : -_RECENT_HISTORY_SIZE],
@@ -125,66 +133,82 @@ class Flow:
         running_state = state.model_copy(
             update={"status": "running", "active_node": node.name}
         )
+        publish(StepStarted(step=node.name))
         started_at = datetime.now(UTC)
-        try:
-            node_result = await node.run(input, running_state)
-            finished_at = datetime.now(UTC)
+        with step_scope(node.name) as delegations:
+            try:
+                node_result = await node.run(input, running_state)
+                finished_at = datetime.now(UTC)
 
-            output = node_result.output
-            next_state = (output.updated_state or running_state).model_copy(
-                update={"status": "running", "active_node": node.name}
-            )
-            cost = node_result.analytics_params.get("cost")
+                output = node_result.output
+                next_state = (output.updated_state or running_state).model_copy(
+                    update={"status": "running", "active_node": node.name}
+                )
+                cost = node_result.analytics_params.get("cost")
 
-            output = output.model_copy(update={"updated_state": next_state})
-            step = FlowStepResult(
-                node_name=node.name,
-                status="finished",
-                started_at=started_at,
-                finished_at=finished_at,
-                duration_ms=(finished_at - started_at).total_seconds() * 1000,
-                output=output,
-                analytics_params=node_result.analytics_params,
-                cost=float(cost) if cost is not None else None,
-            )
-            return output, step, next_state
-        except Exception as exc:
-            logger.exception(
-                "Node run failed node=%s conversation_id=%s",
-                node.name,
-                state.conversation_id,
-            )
-            finished_at = datetime.now(UTC)
-            failed_state = running_state.model_copy(
-                update={"status": "failed", "active_node": None}
-            )
-            fallback_output = cast(
-                TNodeOutput,
-                NodeOutput(updated_state=failed_state, fallback_reason=str(exc)),
-            )
-            step = FlowStepResult(
-                node_name=node.name,
-                status="failed",
-                started_at=started_at,
-                finished_at=finished_at,
-                duration_ms=(finished_at - started_at).total_seconds() * 1000,
-                output=fallback_output,
-                analytics_params={"node": node.name, "cost": 0.0},
-                error=str(exc),
-            )
-            return fallback_output, step, failed_state
+                output = output.model_copy(update={"updated_state": next_state})
+                step = FlowStepResult(
+                    node_name=node.name,
+                    status="finished",
+                    started_at=started_at,
+                    finished_at=finished_at,
+                    duration_ms=(finished_at - started_at).total_seconds() * 1000,
+                    output=output,
+                    analytics_params=node_result.analytics_params,
+                    cost=float(cost) if cost is not None else None,
+                    delegations=list(delegations.values()),
+                )
+                return output, step, next_state
+            except Exception as exc:
+                logger.exception(
+                    "Node run failed node=%s conversation_id=%s",
+                    node.name,
+                    state.conversation_id,
+                )
+                finished_at = datetime.now(UTC)
+                failed_state = running_state.model_copy(
+                    update={"status": "failed", "active_node": None}
+                )
+                fallback_output = cast(
+                    TNodeOutput,
+                    NodeOutput(updated_state=failed_state, fallback_reason=str(exc)),
+                )
+                step = FlowStepResult(
+                    node_name=node.name,
+                    status="failed",
+                    started_at=started_at,
+                    finished_at=finished_at,
+                    duration_ms=(finished_at - started_at).total_seconds() * 1000,
+                    output=fallback_output,
+                    analytics_params={"node": node.name, "cost": 0.0},
+                    error=str(exc),
+                    delegations=list(delegations.values()),
+                )
+                return fallback_output, step, failed_state
 
     async def stream(
         self, input: FlowInput
-    ) -> AsyncIterator[FlowStepResult | FlowRunResult]:
-        """Yield each step as it finishes, then one terminal FlowRunResult.
+    ) -> AsyncIterator[FlowEvent | FlowRunResult]:
+        """Yield flow events as they happen - a step starting, a delegation
+        moving, a step finishing - then one terminal FlowRunResult.
         """
+        
         started_at = datetime.now(UTC)
         history = input.message_history[:-1]
         steps: list[FlowStepResult] = []
-        async for step in self._run_flow(input.current_message, history, input.state):
-            steps.append(step)
-            yield step
+        queue: asyncio.Queue = asyncio.Queue()
+        task = asyncio.create_task(self._queue_put(queue, input.current_message, history, input.state))
+        try:
+            while True:
+                item = await queue.get()
+                if item is DONE:
+                    break
+                if isinstance(item, StepFinished):
+                    steps.append(item.result)
+                yield item
+            await task
+        finally:
+            task.cancel()
         finished_at = datetime.now(UTC)
         duration_ms = (finished_at - started_at).total_seconds() * 1000
         total_cost = sum(s.cost for s in steps if s.cost is not None) or None
@@ -231,11 +255,32 @@ class Flow:
             "step_tokens": [s.analytics_params for s in steps],
         }
 
+        sources = next(
+            (s.output.sources for s in steps if isinstance(s.output, OrchestratorNodeOutput)),
+            [],
+        )
+
         yield FlowRunResult(
             result=result,
+            sources=sources,
             started_at=started_at,
             finished_at=finished_at,
             duration_ms=duration_ms,
             total_cost=total_cost,
             analytics=analytics,
         )
+
+    async def _queue_put(
+        self,
+        queue: asyncio.Queue,
+        current_message: BasicMessage,
+        message_history: list[BasicMessage],
+        state: ConversationState,
+    ) -> None:
+        """Producer task: run the flow, feeding its events into 'queue'"""
+        bind_queue(queue)
+        try:
+            async for step in self._run_flow(current_message, message_history, state):
+                publish(StepFinished.of(step))
+        finally:
+            queue.put_nowait(DONE)

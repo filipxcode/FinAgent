@@ -156,6 +156,10 @@ async def get_agent_instructions(ctx:RunContext[NewsAgentDeps]) -> str:
       'confidence', and answer with whatever reliable evidence you have. If
       nothing relevant was found, say so plainly rather than stretching an
       unrelated headline to fit.
+    - Your only sources are the Fed and SEC feeds. When the task is about
+      something outside them (legislation, Congress, other agencies, media
+      coverage), say so explicitly in 'reasoning' and keep 'confidence' low -
+      the Orchestrator uses that to route the topic to web research.
     - Current date is {current_date}
     - Language of your response {language}
     
@@ -184,9 +188,10 @@ async def get_macro_news() -> FeedToolResponse:
     rulemaking) - then keeps only entries whose title matches a configured
     macro/crypto keyword list, since these sources publish on everything they
     handle, not just what's relevant here. Use this for "what's the latest on
-    rates/regulation" style questions; for crypto-native news, narratives or
-    anything these feeds don't cover, delegate to the Research Agent's
-    'tavily_search' instead.
+    rates/regulation" style questions. For crypto-native news, legislation,
+    other agencies or anything else these feeds don't cover, you have no other
+    source: report low confidence and name what the feeds did not cover, so the
+    Orchestrator can send the topic to web research.
 
     Each entry gives a title, link and published date - not the full article.
     If a headline looks worth digging into for the task, follow up on that URL

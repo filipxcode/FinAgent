@@ -9,12 +9,13 @@
 </head>
 <body>
     <div class="app-container">
-        <!-- Sidebar for Settings -->
+        <!-- Sidebar: chats + settings -->
         <aside class="sidebar">
             <div class="sidebar-header">
                 <h2>FinAgent</h2>
             </div>
-            <div class="sidebar-content">
+            <nav class="chat-list" id="chatList" aria-label="Chats"></nav>
+            <div class="sidebar-footer">
                 <div class="input-group">
                     <label for="apiKey">API Key</label>
                     <input type="password" id="apiKey" placeholder="Enter API Key" autocomplete="off" />
@@ -25,7 +26,7 @@
         <!-- Main Chat Area -->
         <main class="chat-area">
             <header class="chat-header">
-                <h3>Conversation</h3>
+                <h3 id="chatTitle">New conversation</h3>
                 <div class="header-actions">
                     <button id="newChatBtn" class="btn outline">New Chat</button>
                 </div>

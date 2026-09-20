@@ -19,6 +19,8 @@ ConversationStatusT = Literal["idle", "running", "waiting", "completed", "failed
 
 StepStatusT = Literal["finished", "failed"]
 
+DelegationStatusT = Literal["started", "finished", "failed"]
+
 TNodeInput_t = TypeVar("TNodeInput", bound=BaseModel)
 
 class PrecheckStatus(str, Enum):
@@ -77,6 +79,19 @@ class NodeRunResult[TNodeOutput: NodeOutput](BaseModel):
     analytics_params: dict[str, Any] = Field(default_factory=dict)
 
 
+class Delegation(BaseModel):
+    """One hand-off from a node to a specialist agent."""
+
+    type: Literal["delegation"] = "delegation"
+    step: str | None = Field(
+        default=None, description="Name of the node that made the delegation."
+    )
+    id: str
+    agent: str
+    status: DelegationStatusT
+    task: str | None = None
+
+
 class FlowStepResult(BaseModel):
     node_name: str
     status: StepStatusT
@@ -88,6 +103,39 @@ class FlowStepResult(BaseModel):
     analytics_params: dict[str, Any] = Field(default_factory=dict)
     cost: float | None = None
     error: str | None = None
+    delegations: list[Delegation] = Field(
+        default_factory=list,
+        description="Specialist hand-offs made during this step, in start order, "
+        "each in its final status.",
+    )
+
+
+class StepStarted(BaseModel):
+    type: Literal["step.started"] = "step.started"
+    step: str
+
+
+class StepFinished(BaseModel):
+    """Wire-safe view of a finished step; the full result rides along unserialised."""
+
+    type: Literal["step.finished"] = "step.finished"
+    step: str
+    status: StepStatusT
+    duration_ms: float
+    result: FlowStepResult = Field(exclude=True)
+
+    @classmethod
+    def of(cls, result: FlowStepResult) -> StepFinished:
+        return cls(
+            step=result.node_name,
+            status=result.status,
+            duration_ms=result.duration_ms,
+            result=result,
+        )
+
+
+# Everything a running flow reports before its terminal FlowRunResult.
+type FlowEvent = StepStarted | StepFinished | Delegation
 
 
 class FlowRunResult(BaseModel):
@@ -96,6 +144,10 @@ class FlowRunResult(BaseModel):
     finished_at: datetime | None = None
     duration_ms: float | None = None
     total_cost: float | None = None
+    sources: list[str] = Field(
+        default_factory=list,
+        description="Web links the specialists cited while answering, if any.",
+    )
     # analytics: summary of all steps - reasoning, input, output, latency, cost per node
     analytics: dict[str, Any] = Field(
         default_factory=dict,

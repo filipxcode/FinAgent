@@ -93,6 +93,7 @@ async def conversation(
         conversation=result.content,
         conversation_id=result.conversation_id,
         status=result.status,
+        sources=result.run.sources if result.run else [],
     )
 
 
@@ -122,17 +123,12 @@ async def conversation_stream(
                     conversation=item.content,
                     conversation_id=item.conversation_id,
                     status=item.status,
+                    sources=item.run.sources if item.run else [],
                 ),
             )
         else:
-            yield ServerSentEvent(
-                event="step",
-                data={
-                    "node": item.node_name,
-                    "status": item.status,
-                    "duration_ms": item.duration_ms,
-                },
-            )
+            yield ServerSentEvent(event=item.type, data=item.model_dump())
+
 
 @app.get("/history", response_model=HistoryResponse)
 async def history(

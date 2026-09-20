@@ -5,20 +5,42 @@ document.addEventListener('DOMContentLoaded', () => {
     const chatHistory = document.getElementById('chatHistory');
     const apiKeyInput = document.getElementById('apiKey');
     const newChatBtn = document.getElementById('newChatBtn');
+    const chatList = document.getElementById('chatList');
+    const chatTitle = document.getElementById('chatTitle');
     const sendBtn = document.getElementById('sendBtn');
 
     const API_BASE = 'http://localhost:9000';
 
-    // node_name from the backend -> what the user should read
+    // node name from the backend -> what the user should read while it runs / once done
     const STEP_LABELS = {
-        history_summarizer_node: 'Summarised earlier messages',
-        precheck_node: 'Read your question',
-        orchestrator_node: 'Gathered market data',
-        answer_node: 'Wrote the answer',
+        history_summarizer_node: { running: 'Summarising earlier messages…', done: 'Summarised earlier messages' },
+        precheck_node: { running: 'Reading your question…', done: 'Read your question' },
+        orchestrator_node: { running: 'Gathering market data…', done: 'Gathered market data' },
+        answer_node: { running: 'Writing the answer…', done: 'Wrote the answer' },
     };
+    // Specialist agents the orchestrator hands work to.
+    const DELEGATION_LABELS = {
+        researcher: { running: 'Researching…', done: 'Researched', failed: 'Research failed' },
+        whale_tracker: {
+            running: 'Checking whale activity…',
+            done: 'Checked whale activity',
+            failed: 'Whale activity check failed',
+        },
+        news_agent: { running: 'Reading the news…', done: 'Read the news', failed: 'News lookup failed' },
+    };
+    const MARKS = { running: '', finished: '✓', failed: '✕' };
 
-    let currentConversationId = null;
+    const CHATS_KEY = 'finagent_chats';
+    const ACTIVE_CHAT_KEY = 'finagent_active_chat';
+    const HISTORY_PAGE_SIZE = 50;
+    const TITLE_MAX_LENGTH = 40;
+
+    // The backend keeps messages per conversation_id but has no "list my chats"
+    // endpoint, so this browser remembers which conversations it started.
+    let chats = readChats(); // [{ id, title, updatedAt }], most recently used first
+    let currentConversationId = localStorage.getItem(ACTIVE_CHAT_KEY); // null = a fresh chat with no id yet
     let activeStream = null; // AbortController of the turn in flight
+    let viewSeq = 0; // bumped on every chat switch so late responses for a previous chat are dropped
 
     // Load API Key from localStorage
     const savedApiKey = localStorage.getItem('finagent_api_key');
@@ -30,16 +52,213 @@ document.addEventListener('DOMContentLoaded', () => {
         localStorage.setItem('finagent_api_key', e.target.value);
     });
 
-    newChatBtn.addEventListener('click', () => {
-        // Drop the in-flight stream, otherwise its events land in a cleared view.
-        if (activeStream) activeStream.abort();
-        currentConversationId = null;
-        chatHistory.innerHTML = `
-            <div class="message system-msg">
-                <div class="msg-content">Started a new conversation.</div>
-            </div>
-        `;
+    // A key entered after the page restored a chat: load what was waiting for it.
+    apiKeyInput.addEventListener('change', () => {
+        if (apiKeyInput.value.trim() && currentConversationId && !activeStream) {
+            openChat(currentConversationId);
+        }
     });
+
+    newChatBtn.addEventListener('click', showNewChat);
+
+    /* --------------------------------------------------------------- chats */
+
+    function readChats() {
+        try {
+            const parsed = JSON.parse(localStorage.getItem(CHATS_KEY) || '[]');
+            return Array.isArray(parsed)
+                ? parsed.filter((c) => c && typeof c.id === 'string' && typeof c.title === 'string')
+                : [];
+        } catch {
+            return [];
+        }
+    }
+
+    function persistChats() {
+        try {
+            localStorage.setItem(CHATS_KEY, JSON.stringify(chats));
+        } catch {
+            /* storage full or blocked: the chat still works, it just won't be remembered */
+        }
+    }
+
+    function persistActiveChat() {
+        if (currentConversationId) localStorage.setItem(ACTIVE_CHAT_KEY, currentConversationId);
+        else localStorage.removeItem(ACTIVE_CHAT_KEY);
+    }
+
+    function newConversationId() {
+        return typeof crypto !== 'undefined' && crypto.randomUUID
+            ? crypto.randomUUID()
+            : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    }
+
+    function titleFrom(message) {
+        const oneLine = message.replace(/\s+/g, ' ').trim();
+        return oneLine.length > TITLE_MAX_LENGTH ? `${oneLine.slice(0, TITLE_MAX_LENGTH - 1)}…` : oneLine;
+    }
+
+    /* Register the chat on first use and float it to the top of the list. */
+    function touchChat(id, firstMessage) {
+        const existing = chats.find((c) => c.id === id);
+        const chat = existing || { id, title: titleFrom(firstMessage) };
+        chat.updatedAt = Date.now();
+        chats = [chat, ...chats.filter((c) => c.id !== id)];
+        persistChats();
+        persistActiveChat();
+        renderChatList();
+        renderHeader();
+    }
+
+    function renderHeader() {
+        const chat = chats.find((c) => c.id === currentConversationId);
+        chatTitle.textContent = chat ? chat.title : 'New conversation';
+    }
+
+    function renderChatList() {
+        chatList.replaceChildren();
+        if (!chats.length) {
+            const empty = document.createElement('div');
+            empty.className = 'chat-list-empty';
+            empty.textContent = 'No chats yet. Send a message to start one.';
+            chatList.appendChild(empty);
+            return;
+        }
+
+        for (const chat of chats) {
+            const item = document.createElement('div');
+            item.className = `chat-item${chat.id === currentConversationId ? ' active' : ''}`;
+
+            const open = document.createElement('button');
+            open.type = 'button';
+            open.className = 'chat-item-title';
+            open.textContent = chat.title;
+            open.title = chat.title;
+            if (chat.id === currentConversationId) open.setAttribute('aria-current', 'true');
+            open.addEventListener('click', () => {
+                if (chat.id !== currentConversationId) openChat(chat.id);
+            });
+
+            const remove = document.createElement('button');
+            remove.type = 'button';
+            remove.className = 'chat-item-delete';
+            remove.textContent = '✕';
+            remove.setAttribute('aria-label', `Remove chat: ${chat.title}`);
+            remove.addEventListener('click', () => removeChat(chat.id));
+
+            item.append(open, remove);
+            chatList.appendChild(item);
+        }
+    }
+
+    function leaveCurrentView() {
+        // Drop the in-flight stream, otherwise its events land in another chat's view.
+        if (activeStream) activeStream.abort();
+        return ++viewSeq;
+    }
+
+    function showNewChat() {
+        leaveCurrentView();
+        currentConversationId = null;
+        persistActiveChat();
+        chatHistory.replaceChildren(buildMessage('system', 'Started a new conversation.'));
+        renderChatList();
+        renderHeader();
+        chatInput.focus();
+    }
+
+    async function openChat(id) {
+        const seq = leaveCurrentView();
+        currentConversationId = id;
+        persistActiveChat();
+        renderChatList();
+        renderHeader();
+
+        if (!apiKeyInput.value.trim()) {
+            chatHistory.replaceChildren(buildMessage('system', 'Enter your API key in the sidebar to load this chat.'));
+            return;
+        }
+
+        const loading = buildMessage('system', 'Loading messages…');
+        chatHistory.replaceChildren(loading);
+        try {
+            const page = await fetchHistory(id);
+            if (seq !== viewSeq) return;
+            if (!page.messages.length) {
+                chatHistory.replaceChildren(buildMessage('system', 'No messages in this chat yet.'));
+                return;
+            }
+            chatHistory.replaceChildren(historyFragment(page, seq));
+            scrollToBottom();
+        } catch (error) {
+            if (seq !== viewSeq) return;
+            chatHistory.replaceChildren(buildMessage('system', `Could not load this chat: ${error.message}`));
+        }
+    }
+
+    function removeChat(id) {
+        const chat = chats.find((c) => c.id === id);
+        if (!chat) return;
+        // There is no delete endpoint: this only forgets the chat in this browser.
+        if (!confirm(`Remove "${chat.title}" from your chat list?\nIts messages stay on the server.`)) return;
+
+        chats = chats.filter((c) => c.id !== id);
+        persistChats();
+        if (id === currentConversationId) showNewChat();
+        else renderChatList();
+    }
+
+    async function fetchHistory(id, before) {
+        const params = new URLSearchParams({ conversation_id: id, limit: String(HISTORY_PAGE_SIZE) });
+        if (before) params.set('before', before); // URLSearchParams escapes the '+' of the UTC offset
+        const response = await fetch(`${API_BASE}/history?${params}`, {
+            headers: { 'x-api-key': apiKeyInput.value.trim() },
+        });
+        if (!response.ok) {
+            const body = await response.json().catch(() => ({}));
+            throw new Error(body.detail || body.error || `Server error: ${response.status}`);
+        }
+        return response.json();
+    }
+
+    /* One page of history, oldest first, topped by a button for the page before it. */
+    function historyFragment(page, seq) {
+        const fragment = document.createDocumentFragment();
+
+        if (page.next_cursor) {
+            const older = document.createElement('button');
+            older.type = 'button';
+            older.className = 'load-older';
+            older.textContent = 'Load earlier messages';
+            older.addEventListener('click', () => loadOlder(older, page.next_cursor, seq));
+            fragment.appendChild(older);
+        }
+        for (const message of page.messages) {
+            fragment.appendChild(buildMessage(message.role, message.content));
+        }
+        return fragment;
+    }
+
+    async function loadOlder(button, cursor, seq) {
+        button.disabled = true;
+        button.textContent = 'Loading…';
+        try {
+            const page = await fetchHistory(currentConversationId, cursor);
+            if (seq !== viewSeq) return;
+
+            // Keep the message the reader was looking at where it is.
+            const heightBefore = chatHistory.scrollHeight;
+            const topBefore = chatHistory.scrollTop;
+            button.replaceWith(historyFragment(page, seq));
+            chatHistory.style.scrollBehavior = 'auto';
+            chatHistory.scrollTop = topBefore + (chatHistory.scrollHeight - heightBefore);
+            chatHistory.style.scrollBehavior = '';
+        } catch (error) {
+            if (seq !== viewSeq) return;
+            button.disabled = false;
+            button.textContent = `Retry loading earlier messages (${error.message})`;
+        }
+    }
 
     /* ---------------------------------------------------------------- SSE */
 
@@ -100,10 +319,8 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    async function openStream(message, apiKey, signal) {
-        const url = currentConversationId
-            ? `${API_BASE}/stream/conversation/${encodeURIComponent(currentConversationId)}`
-            : `${API_BASE}/stream/conversation`;
+    async function openStream(conversationId, message, apiKey, signal) {
+        const url = `${API_BASE}/stream/conversation/${encodeURIComponent(conversationId)}`;
 
         const response = await fetch(url, {
             method: 'POST',
@@ -126,7 +343,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     /* ------------------------------------------------------------------ UI */
 
-    function appendMessage(role, content, steps) {
+    function buildMessage(role, content, steps, sources) {
         const msgDiv = document.createElement('div');
         msgDiv.className = `message ${role}-msg`;
 
@@ -135,13 +352,61 @@ document.addEventListener('DOMContentLoaded', () => {
         contentDiv.textContent = content;
         msgDiv.appendChild(contentDiv);
 
+        const sourcesEl = buildSources(sources);
+        if (sourcesEl) contentDiv.appendChild(sourcesEl);
+
         if (steps && steps.length) {
             contentDiv.appendChild(buildTrace(steps));
         }
+        return msgDiv;
+    }
 
+    function appendMessage(role, content, steps, sources) {
+        const msgDiv = buildMessage(role, content, steps, sources);
         chatHistory.appendChild(msgDiv);
         scrollToBottom();
         return msgDiv;
+    }
+
+    /* Links the agents cited. They come off the web, so only http(s) becomes a link. */
+    function buildSources(sources) {
+        const links = [];
+        for (const raw of sources || []) {
+            let url;
+            try {
+                url = new URL(raw);
+            } catch {
+                continue;
+            }
+            if (url.protocol !== 'http:' && url.protocol !== 'https:') continue;
+
+            const a = document.createElement('a');
+            a.href = url.href;
+            a.target = '_blank';
+            a.rel = 'noopener noreferrer';
+            a.title = url.href;
+            a.textContent = url.hostname.replace(/^www\./, '') + (url.pathname === '/' ? '' : url.pathname);
+            links.push(a);
+        }
+        if (!links.length) return null;
+
+        const box = document.createElement('div');
+        box.className = 'sources';
+
+        const title = document.createElement('div');
+        title.className = 'sources-title';
+        title.textContent = `Sources (${links.length})`;
+
+        const list = document.createElement('ol');
+        list.className = 'sources-list';
+        for (const a of links) {
+            const li = document.createElement('li');
+            li.appendChild(a);
+            list.appendChild(li);
+        }
+
+        box.append(title, list);
+        return box;
     }
 
     function appendProgress() {
@@ -165,51 +430,151 @@ document.addEventListener('DOMContentLoaded', () => {
         return msgDiv;
     }
 
-    function addStepRow(progressEl, step) {
-        const failed = step.status === 'failed';
-        const row = document.createElement('div');
-        row.className = `step-row ${failed ? 'failed' : 'ok'}`;
+    /* A step is { name, status, duration_ms, delegations: [{ id, agent, task, status }] }
+       with status running | finished | failed. The live view and the trace kept
+       under the answer both render from this one shape. */
+
+    function labelFor(labels, key, status) {
+        const entry = labels[key];
+        if (!entry) return key;
+        if (status === 'running') return entry.running;
+        if (status === 'failed' && entry.failed) return entry.failed;
+        return entry.done;
+    }
+
+    function createRow(className) {
+        const el = document.createElement('div');
+        el.className = `step-row ${className || ''}`.trim();
 
         const mark = document.createElement('span');
         mark.className = 'step-mark';
-        mark.textContent = failed ? '✕' : '✓';
 
         const name = document.createElement('span');
         name.className = 'step-name';
-        name.textContent = STEP_LABELS[step.node] || step.node;
+
+        const detail = document.createElement('span');
+        detail.className = 'step-detail';
 
         const time = document.createElement('span');
         time.className = 'step-time';
-        time.textContent = formatMs(step.duration_ms);
 
-        row.append(mark, name, time);
-        progressEl.querySelector('.progress-steps').appendChild(row);
-        scrollToBottom();
+        el.append(mark, name, detail, time);
+
+        return {
+            el,
+            paint({ status, label, detailText, timeText }) {
+                el.classList.remove('running', 'finished', 'failed');
+                el.classList.add(status);
+                mark.textContent = MARKS[status];
+                name.textContent = label;
+                detail.textContent = detailText || '';
+                detail.hidden = !detailText;
+                time.textContent = timeText || '';
+            },
+        };
+    }
+
+    function createStepGroup(step) {
+        const el = document.createElement('div');
+        el.className = 'step-group';
+
+        const row = createRow();
+        const list = document.createElement('div');
+        list.className = 'delegations';
+        el.append(row.el, list);
+
+        const delegationRows = new Map();
+
+        function render() {
+            row.paint({
+                status: step.status,
+                label: labelFor(STEP_LABELS, step.name, step.status),
+                timeText: step.status === 'running' ? '' : formatMs(step.duration_ms),
+            });
+            for (const d of step.delegations) {
+                let dRow = delegationRows.get(d.id);
+                if (!dRow) {
+                    dRow = createRow('delegation-row');
+                    delegationRows.set(d.id, dRow);
+                    list.appendChild(dRow.el);
+                }
+                dRow.paint({
+                    status: d.status,
+                    label: labelFor(DELEGATION_LABELS, d.agent, d.status),
+                    detailText: d.task,
+                });
+            }
+        }
+
+        render();
+        return { el, render };
+    }
+
+    /* Folds the SSE events of one turn into steps and keeps `container` in sync. */
+    function createTurnTracker(container) {
+        const steps = [];
+        const groups = new Map();
+
+        function ensureStep(name) {
+            let step = steps.find((s) => s.name === name);
+            if (!step) {
+                step = { name, status: 'running', duration_ms: null, delegations: [] };
+                steps.push(step);
+                const group = createStepGroup(step);
+                groups.set(name, group);
+                container.appendChild(group.el);
+            }
+            return step;
+        }
+
+        function handle(event, data) {
+            if (event === 'step.started') {
+                ensureStep(data.step);
+            } else if (event === 'step.finished') {
+                const step = ensureStep(data.step);
+                step.status = data.status;
+                step.duration_ms = data.duration_ms;
+                // A delegation still running when its step ends was cut short.
+                for (const d of step.delegations) {
+                    if (d.status === 'running') d.status = 'failed';
+                }
+                groups.get(step.name).render();
+            } else if (event === 'delegation') {
+                const step = data.step ? ensureStep(data.step) : steps[steps.length - 1];
+                if (!step) return;
+                const status = data.status === 'started' ? 'running' : data.status;
+                const known = step.delegations.find((d) => d.id === data.id);
+                if (known) {
+                    known.status = status;
+                } else {
+                    step.delegations.push({ id: data.id, agent: data.agent, task: data.task, status });
+                }
+                groups.get(step.name).render();
+            } else {
+                return;
+            }
+            scrollToBottom();
+        }
+
+        return { steps, handle };
     }
 
     function buildTrace(steps) {
         const total = steps.reduce((sum, s) => sum + (s.duration_ms || 0), 0);
+        const delegated = steps.reduce((sum, s) => sum + s.delegations.length, 0);
         const details = document.createElement('details');
         details.className = 'trace';
 
+        const parts = [`${steps.length} step${steps.length === 1 ? '' : 's'}`];
+        if (delegated) parts.push(`${delegated} specialist call${delegated === 1 ? '' : 's'}`);
+        parts.push(formatMs(total));
+
         const summary = document.createElement('summary');
-        summary.textContent = `${steps.length} step${steps.length === 1 ? '' : 's'} · ${formatMs(total)}`;
+        summary.textContent = parts.join(' · ');
         details.appendChild(summary);
 
         for (const step of steps) {
-            const row = document.createElement('div');
-            row.className = `step-row ${step.status === 'failed' ? 'failed' : 'ok'}`;
-
-            const name = document.createElement('span');
-            name.className = 'step-name';
-            name.textContent = STEP_LABELS[step.node] || step.node;
-
-            const time = document.createElement('span');
-            time.className = 'step-time';
-            time.textContent = formatMs(step.duration_ms);
-
-            row.append(name, time);
-            details.appendChild(row);
+            details.appendChild(createStepGroup(step).el);
         }
         return details;
     }
@@ -251,25 +616,30 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
+        // A fresh chat gets its id here; the backend takes any id in the path.
+        if (!currentConversationId) currentConversationId = newConversationId();
+        const conversationId = currentConversationId;
+
         chatInput.value = '';
         setBusy(true);
         appendMessage('user', message);
 
         const progressEl = appendProgress();
-        const steps = [];
+        const tracker = createTurnTracker(progressEl.querySelector('.progress-steps'));
         const controller = new AbortController();
         activeStream = controller;
 
         try {
-            const response = await openStream(message, apiKey, controller.signal);
+            const response = await openStream(conversationId, message, apiKey, controller.signal);
+            // The server took the turn: only now does it belong in the chat list.
+            touchChat(conversationId, message);
             let terminal = null;
 
             for await (const { event, data } of readSSE(response)) {
-                if (event === 'step') {
-                    steps.push(data);
-                    addStepRow(progressEl, data);
-                } else if (event === 'done' || event === 'error') {
+                if (event === 'done' || event === 'error') {
                     terminal = { event, data };
+                } else {
+                    tracker.handle(event, data);
                 }
             }
 
@@ -278,11 +648,13 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!terminal) {
                 appendMessage('system', 'Connection closed before the answer arrived.');
             } else {
-                if (terminal.data.conversation_id) {
-                    currentConversationId = terminal.data.conversation_id;
-                }
                 if (terminal.event === 'done') {
-                    appendMessage('assistant', terminal.data.conversation || 'No response content.', steps);
+                    appendMessage(
+                        'assistant',
+                        terminal.data.conversation || 'No response content.',
+                        tracker.steps,
+                        terminal.data.sources,
+                    );
                 } else {
                     appendMessage('system', terminal.data.conversation || 'The run failed.');
                 }
@@ -293,8 +665,18 @@ document.addEventListener('DOMContentLoaded', () => {
                 appendMessage('system', `Error: ${error.message}`);
             }
         } finally {
-            activeStream = null;
+            if (activeStream === controller) activeStream = null;
             setBusy(false);
         }
     });
+
+    /* ---------------------------------------------------------------- boot */
+
+    if (currentConversationId && !chats.some((c) => c.id === currentConversationId)) {
+        currentConversationId = null;
+        persistActiveChat();
+    }
+    renderChatList();
+    renderHeader();
+    if (currentConversationId) openChat(currentConversationId);
 });
