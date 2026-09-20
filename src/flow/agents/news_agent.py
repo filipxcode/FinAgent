@@ -6,82 +6,17 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from inspect import cleandoc
 
-import feedparser
-import httpx
 from pydantic import BaseModel, Field
 from pydantic_ai import RunContext
 from tavily import AsyncTavilyClient
 
 from src.config.config import get_settings
 from src.flow.agents.prompt import current_date
+from src.flow.agents.types import ExtractedArticle, ExtractResponse, FeedToolResponse
+from src.flow.agents.utils import get_feed, matches_keywords
 from src.flow.types import LanguageEnum
 
 logger = logging.getLogger(__name__)
-
-
-class FeedOut(BaseModel):
-    title: str
-    url: str
-    published: datetime | None = None
-    source: str
-
-
-class FeedToolResponse(BaseModel):
-    results: list[FeedOut] = Field(
-        default_factory=list,
-        description="Newest first, across all configured feeds.",
-    )
-    error: str | None = None
-
-
-async def get_feed(url: str) -> tuple[list[FeedOut], str | None]:
-    """Fetch and parse one RSS/Atom feed into entries.
-    """
-    source = httpx.URL(url).host or url
-    try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            response = await client.get(url)
-            response.raise_for_status()
-    except Exception as exc:
-        logger.exception("RSS fetch failed url=%s", url)
-        return [], f"{source} request error: {exc}"
-
-    feed = feedparser.parse(response.content)
-    results = []
-    for entry in feed.entries:
-        published = None
-        if parsed := entry.get("published_parsed"):
-            published = datetime(*parsed[:6], tzinfo=UTC)
-        results.append(
-            FeedOut(
-                title=entry.get("title", ""),
-                url=entry.get("link", ""),
-                published=published,
-                source=source,
-            )
-        )
-    return results, None
-
-
-def _matches_keywords(title: str, keywords: list[str]) -> bool:
-    """True if any keyword appears in the title, case-insensitive."""
-    lowered = title.lower()
-    return any(keyword.lower() in lowered for keyword in keywords)
-
-
-class ExtractedArticle(BaseModel):
-    url: str
-    title: str = ""
-    content: str = ""
-
-
-class ExtractResponse(BaseModel):
-    articles: list[ExtractedArticle] = Field(default_factory=list)
-    failed_urls: list[str] = Field(
-        default_factory=list,
-        description="URLs Tavily could not extract - paywalled, blocked, or otherwise failed.",
-    )
-    error: str | None = None
 
 
 class NewsAgentOutput(BaseModel):
@@ -205,7 +140,7 @@ async def get_macro_news() -> FeedToolResponse:
     fetched = await asyncio.gather(*(get_feed(u) for u in settings.rss_urls))
 
     results = [item for sublist, _ in fetched for item in sublist]
-    results = [item for item in results if _matches_keywords(item.title, settings.news_keywords)]
+    results = [item for item in results if matches_keywords(item.title, settings.news_keywords)]
     results.sort(key=lambda item: item.published or datetime.min.replace(tzinfo=UTC), reverse=True)
 
     errors = [err for _, err in fetched if err]
