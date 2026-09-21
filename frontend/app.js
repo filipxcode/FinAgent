@@ -30,17 +30,20 @@ document.addEventListener('DOMContentLoaded', () => {
     };
     const MARKS = { running: '', finished: '✓', failed: '✕' };
 
-    const CHATS_KEY = 'finagent_chats';
     const ACTIVE_CHAT_KEY = 'finagent_active_chat';
+    const CONVERSATIONS_PAGE_SIZE = 30;
     const HISTORY_PAGE_SIZE = 50;
     const TITLE_MAX_LENGTH = 40;
 
-    // The backend keeps messages per conversation_id but has no "list my chats"
-    // endpoint, so this browser remembers which conversations it started.
-    let chats = readChats(); // [{ id, title, updatedAt }], most recently used first
+    // The chat list lives on the server (GET /conversations); only the open chat is remembered here.
+    let chats = []; // [{ id, title, updatedAt, local? }], most recently active first
+    let chatsCursor = null; // `before` value for the next page of the list, null = no more
+    let chatsStatus = 'idle'; // idle | loading | error
+    let chatsError = '';
     let currentConversationId = localStorage.getItem(ACTIVE_CHAT_KEY); // null = a fresh chat with no id yet
     let activeStream = null; // AbortController of the turn in flight
     let viewSeq = 0; // bumped on every chat switch so late responses for a previous chat are dropped
+    let listSeq = 0; // same guard for the chat list
 
     // Load API Key from localStorage
     const savedApiKey = localStorage.getItem('finagent_api_key');
@@ -54,6 +57,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // A key entered after the page restored a chat: load what was waiting for it.
     apiKeyInput.addEventListener('change', () => {
+        loadConversations();
         if (apiKeyInput.value.trim() && currentConversationId && !activeStream) {
             openChat(currentConversationId);
         }
@@ -62,25 +66,6 @@ document.addEventListener('DOMContentLoaded', () => {
     newChatBtn.addEventListener('click', showNewChat);
 
     /* --------------------------------------------------------------- chats */
-
-    function readChats() {
-        try {
-            const parsed = JSON.parse(localStorage.getItem(CHATS_KEY) || '[]');
-            return Array.isArray(parsed)
-                ? parsed.filter((c) => c && typeof c.id === 'string' && typeof c.title === 'string')
-                : [];
-        } catch {
-            return [];
-        }
-    }
-
-    function persistChats() {
-        try {
-            localStorage.setItem(CHATS_KEY, JSON.stringify(chats));
-        } catch {
-            /* storage full or blocked: the chat still works, it just won't be remembered */
-        }
-    }
 
     function persistActiveChat() {
         if (currentConversationId) localStorage.setItem(ACTIVE_CHAT_KEY, currentConversationId);
@@ -101,10 +86,9 @@ document.addEventListener('DOMContentLoaded', () => {
     /* Register the chat on first use and float it to the top of the list. */
     function touchChat(id, firstMessage) {
         const existing = chats.find((c) => c.id === id);
-        const chat = existing || { id, title: titleFrom(firstMessage) };
-        chat.updatedAt = Date.now();
+        const chat = existing || { id, title: titleFrom(firstMessage), local: true };
+        chat.updatedAt = new Date().toISOString();
         chats = [chat, ...chats.filter((c) => c.id !== id)];
-        persistChats();
         persistActiveChat();
         renderChatList();
         renderHeader();
@@ -112,17 +96,30 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function renderHeader() {
         const chat = chats.find((c) => c.id === currentConversationId);
-        chatTitle.textContent = chat ? chat.title : 'New conversation';
+        if (chat) chatTitle.textContent = chat.title;
+        else chatTitle.textContent = currentConversationId ? 'Conversation' : 'New conversation';
     }
 
     function renderChatList() {
         chatList.replaceChildren();
-        if (!chats.length) {
+
+        if (chatsStatus === 'error') {
+            const failed = document.createElement('div');
+            failed.className = 'chat-list-empty';
+            failed.textContent = `Could not load chats: ${chatsError}`;
+            const retry = document.createElement('button');
+            retry.type = 'button';
+            retry.className = 'load-older';
+            retry.textContent = 'Retry';
+            retry.addEventListener('click', () => loadConversations());
+            chatList.append(failed, retry);
+        } else if (!chats.length) {
             const empty = document.createElement('div');
             empty.className = 'chat-list-empty';
-            empty.textContent = 'No chats yet. Send a message to start one.';
+            empty.textContent = chatsStatus === 'loading'
+                ? 'Loading chats…'
+                : 'No chats yet. Send a message to start one.';
             chatList.appendChild(empty);
-            return;
         }
 
         for (const chat of chats) {
@@ -139,15 +136,18 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (chat.id !== currentConversationId) openChat(chat.id);
             });
 
-            const remove = document.createElement('button');
-            remove.type = 'button';
-            remove.className = 'chat-item-delete';
-            remove.textContent = '✕';
-            remove.setAttribute('aria-label', `Remove chat: ${chat.title}`);
-            remove.addEventListener('click', () => removeChat(chat.id));
-
-            item.append(open, remove);
+            item.appendChild(open);
             chatList.appendChild(item);
+        }
+
+        if (chatsCursor && chatsStatus !== 'error') {
+            const more = document.createElement('button');
+            more.type = 'button';
+            more.className = 'load-older';
+            more.textContent = chatsStatus === 'loading' ? 'Loading…' : 'Show older chats';
+            more.disabled = chatsStatus === 'loading';
+            more.addEventListener('click', () => loadConversations(true));
+            chatList.appendChild(more);
         }
     }
 
@@ -196,22 +196,8 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    function removeChat(id) {
-        const chat = chats.find((c) => c.id === id);
-        if (!chat) return;
-        // There is no delete endpoint: this only forgets the chat in this browser.
-        if (!confirm(`Remove "${chat.title}" from your chat list?\nIts messages stay on the server.`)) return;
-
-        chats = chats.filter((c) => c.id !== id);
-        persistChats();
-        if (id === currentConversationId) showNewChat();
-        else renderChatList();
-    }
-
-    async function fetchHistory(id, before) {
-        const params = new URLSearchParams({ conversation_id: id, limit: String(HISTORY_PAGE_SIZE) });
-        if (before) params.set('before', before); // URLSearchParams escapes the '+' of the UTC offset
-        const response = await fetch(`${API_BASE}/history?${params}`, {
+    async function apiGet(path, params) {
+        const response = await fetch(`${API_BASE}${path}?${new URLSearchParams(params)}`, {
             headers: { 'x-api-key': apiKeyInput.value.trim() },
         });
         if (!response.ok) {
@@ -221,7 +207,56 @@ document.addEventListener('DOMContentLoaded', () => {
         return response.json();
     }
 
-    /* One page of history, oldest first, topped by a button for the page before it. */
+    function fetchHistory(id, before) {
+        // URLSearchParams escapes the '+' of the UTC offset in the cursor.
+        const params = { conversation_id: id, limit: String(HISTORY_PAGE_SIZE) };
+        if (before) params.before = before;
+        return apiGet('/history', params);
+    }
+
+    /* First page replaces the list; `more` appends the page after the current one. */
+    async function loadConversations(more = false) {
+        if (!apiKeyInput.value.trim()) {
+            chats = chats.filter((c) => c.local);
+            chatsCursor = null;
+            chatsStatus = 'idle';
+            renderChatList();
+            return;
+        }
+
+        const seq = ++listSeq;
+        chatsStatus = 'loading';
+        renderChatList();
+        try {
+            const params = { limit: String(CONVERSATIONS_PAGE_SIZE) };
+            if (more && chatsCursor) params.before = chatsCursor;
+            const page = await apiGet('/conversations', params);
+            if (seq !== listSeq) return;
+
+            const incoming = page.conversations.map((c) => ({
+                id: c.conversation_id,
+                title: c.title,
+                updatedAt: c.updated_at,
+            }));
+            const known = new Set(incoming.map((c) => c.id));
+            if (more) {
+                const have = new Set(chats.map((c) => c.id));
+                chats = [...chats, ...incoming.filter((c) => !have.has(c.id))];
+            } else {
+                // A chat started here that the server has not listed yet stays on top.
+                chats = [...chats.filter((c) => c.local && !known.has(c.id)), ...incoming];
+            }
+            chatsCursor = page.next_cursor;
+            chatsStatus = 'idle';
+        } catch (error) {
+            if (seq !== listSeq) return;
+            chatsStatus = 'error';
+            chatsError = error.message;
+        }
+        renderChatList();
+        renderHeader();
+    }
+
     function historyFragment(page, seq) {
         const fragment = document.createDocumentFragment();
 
@@ -672,11 +707,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
     /* ---------------------------------------------------------------- boot */
 
-    if (currentConversationId && !chats.some((c) => c.id === currentConversationId)) {
-        currentConversationId = null;
-        persistActiveChat();
-    }
+    localStorage.removeItem('finagent_chats'); // the list used to be kept here; it now comes from the server
     renderChatList();
     renderHeader();
+    loadConversations();
     if (currentConversationId) openChat(currentConversationId);
 });

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from functools import lru_cache
@@ -84,6 +85,7 @@ class PostgresClient:
         async with engine.begin() as connection:
             await connection.run_sync(Base.metadata.create_all)
 
+    @asynccontextmanager
     async def session(self) -> AsyncIterator[AsyncSession]:
         session_maker = self._require_session_maker()
         async with session_maker() as session:
@@ -107,7 +109,7 @@ class ConversationService:
     db: PostgresClient
 
     async def save_message(self, *, conversation_id: str, role: str, content: str) -> None:
-        async for session in self.db.session():
+        async with self.db.session() as session:
             session.add(
                 ConversationMessageRow(
                     conversation_id=conversation_id,
@@ -137,16 +139,76 @@ class ConversationService:
             stmt = stmt.where(ConversationMessageRow.created_at < before)
         stmt = stmt.order_by(ConversationMessageRow.created_at.desc()).limit(limit)
 
-        async for session in self.db.session():
+        async with self.db.session() as session:
             result = await session.execute(stmt)
             rows = result.all()
-            history = [
-                {"role": row.role, "content": row.content, "created_at": row.created_at}
-                for row in rows
-            ]
-            return list(reversed(history))
+        history = [
+            {"role": row.role, "content": row.content, "created_at": row.created_at}
+            for row in rows
+        ]
+        return list(reversed(history))
 
-        return []
+    async def get_conversations(
+        self,
+        *,
+        limit: int = 30,
+        before: datetime | None = None,
+    ) -> list[dict[str, Any]]:
+        """Conversations, most recently active first.
+
+        A conversation is whatever shares a conversation_id; its title is the
+        first thing the user said in it. Pages further back in time: pass the
+        updated_at of the last conversation seen to get the page after it.
+        """
+        updated_at = func.max(ConversationMessageRow.created_at)
+        stmt = (
+            select(
+                ConversationMessageRow.conversation_id,
+                func.min(ConversationMessageRow.created_at).label("created_at"),
+                updated_at.label("updated_at"),
+            )
+            .group_by(ConversationMessageRow.conversation_id)
+            .order_by(updated_at.desc())
+            .limit(limit)
+        )
+        if before is not None:
+            stmt = stmt.having(updated_at < before)
+
+        async with self.db.session() as session:
+            rows = (await session.execute(stmt)).all()
+            if not rows:
+                return []
+            first_user_message = (
+                select(ConversationMessageRow.conversation_id, ConversationMessageRow.content)
+                .where(
+                    ConversationMessageRow.conversation_id.in_([r.conversation_id for r in rows]),
+                    ConversationMessageRow.role == "user",
+                )
+                .distinct(ConversationMessageRow.conversation_id)
+                .order_by(
+                    ConversationMessageRow.conversation_id,
+                    ConversationMessageRow.created_at,
+                )
+            )
+            titles = dict((await session.execute(first_user_message)).all())
+
+        return [
+            {
+                "conversation_id": row.conversation_id,
+                "title": _title(titles.get(row.conversation_id)),
+                "created_at": row.created_at,
+                "updated_at": row.updated_at,
+            }
+            for row in rows
+        ]
+
+
+def _title(first_message: str | None, max_length: int = 80) -> str:
+    """One line from the opening message, cut to a sidebar-friendly length."""
+    line = " ".join((first_message or "").split())
+    if not line:
+        return "New conversation"
+    return line if len(line) <= max_length else f"{line[: max_length - 1]}…"
 
 
 @lru_cache
