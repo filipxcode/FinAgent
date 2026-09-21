@@ -44,7 +44,27 @@ class HistoryResponse(BaseModel):
     next_cursor: datetime | None = Field(
         default=None,
         description=(
-            "Pass as `before` to fetch the page right before this one. "
+            "Pass as 'before' to fetch the page right before this one. "
             "None means there is no older history left."
+        ),
+    )
+
+
+class ConversationSummary(BaseModel):
+    conversation_id: ConversationIdFieldT
+    title: str = Field(description="The first thing the user said in the conversation.")
+    created_at: datetime
+    updated_at: datetime
+
+
+class ConversationListResponse(BaseModel):
+    conversations: list[ConversationSummary] = Field(
+        default_factory=list, description="Most recently active first."
+    )
+    next_cursor: datetime | None = Field(
+        default=None,
+        description=(
+            "Pass as 'before' to fetch the page after this one. "
+            "None means there are no older conversations left."
         ),
     )

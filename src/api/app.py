@@ -20,8 +20,10 @@ from src.api.deps import get_auth_token, get_postgres_client, get_service
 from src.api.logger import configure_logging
 from src.api.types import (
     ConversationIdFieldT,
+    ConversationListResponse,
     ConversationRequestInput,
     ConversationRequestOutput,
+    ConversationSummary,
     HistoryResponse,
 )
 from src.config.config import Settings
@@ -149,6 +151,22 @@ async def history(
     ]
     next_cursor = messages[0].created_at if len(messages) == limit else None
     return HistoryResponse(messages=messages, next_cursor=next_cursor)
+
+@app.get("/conversations", response_model=ConversationListResponse)
+async def conversations(
+    auth_token: Annotated[str, Depends(get_auth_token)],
+    service: Annotated[ConversationService, Depends(get_service)],
+    limit: Annotated[int, Query(ge=1, le=100)] = 30,
+    before: Annotated[
+        datetime | None,
+        Query(description="Fetch conversations last active before this timestamp."),
+    ] = None,
+):
+    _ = auth_token
+    rows = await service.get_conversations(limit=limit, before=before)
+    summaries = [ConversationSummary(**row) for row in rows]
+    next_cursor = summaries[-1].updated_at if len(summaries) == limit else None
+    return ConversationListResponse(conversations=summaries, next_cursor=next_cursor)
 
 
 if __name__ == "__main__":

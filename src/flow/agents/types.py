@@ -1,8 +1,3 @@
-"""Models for the tools the agents call and the helpers behind them.
-
-The agents' own types (outputs, deps, node inputs) stay in each agent's module.
-"""
-
 from __future__ import annotations
 
 from datetime import date, datetime

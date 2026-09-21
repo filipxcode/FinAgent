@@ -9,11 +9,18 @@ from src.flow.types import BasicMessage, FlowRunResult, NodeOutput
 
 
 class _StubService:
+    conversations: list[dict] = []
+    conversations_kwargs: dict = {}
+
     async def save_message(self, **kwargs):
         return None
 
     async def get_history(self, **kwargs):
         return []
+
+    async def get_conversations(self, **kwargs):
+        _StubService.conversations_kwargs = kwargs
+        return _StubService.conversations
 
 
 app.dependency_overrides[deps.get_service] = lambda: _StubService()
@@ -89,3 +96,68 @@ def test_conversation_response_carries_sources_and_defaults_to_none(monkeypatch)
     monkeypatch.setattr(app_module, "flow", _StubFlow([]))
     without = client.post("/conversation", json={"conversation": "hi"}, headers=headers)
     assert without.json()["sources"] == []
+
+
+def _conversation(id, updated_at):
+    return {
+        "conversation_id": id,
+        "title": f"title {id}",
+        "created_at": "2026-09-01T10:00:00+00:00",
+        "updated_at": updated_at,
+    }
+
+
+def test_conversations_requires_auth():
+    assert client.get("/conversations").status_code == 401
+
+
+def test_conversations_full_page_returns_a_cursor_to_the_next_one(monkeypatch):
+    rows = [_conversation("a", "2026-09-03T10:00:00+00:00"), _conversation("b", "2026-09-02T10:00:00+00:00")]
+    monkeypatch.setattr(_StubService, "conversations", rows)
+
+    response = client.get("/conversations", params={"limit": 2}, headers={"x-api-key": "test-token"})
+
+    body = response.json()
+    assert [c["conversation_id"] for c in body["conversations"]] == ["a", "b"]
+    assert body["conversations"][0]["title"] == "title a"
+    assert body["next_cursor"] == "2026-09-02T10:00:00Z"
+    assert _StubService.conversations_kwargs == {"limit": 2, "before": None}
+
+
+def test_conversations_short_page_has_no_cursor_and_forwards_before(monkeypatch):
+    monkeypatch.setattr(_StubService, "conversations", [_conversation("a", "2026-09-03T10:00:00+00:00")])
+
+    response = client.get(
+        "/conversations",
+        params={"limit": 5, "before": "2026-09-04T10:00:00+00:00"},
+        headers={"x-api-key": "test-token"},
+    )
+
+    assert response.json()["next_cursor"] is None
+    assert _StubService.conversations_kwargs["before"].isoformat() == "2026-09-04T10:00:00+00:00"
+
+
+def test_stream_still_ends_with_done_when_saving_the_reply_fails(monkeypatch, caplog):
+    class _FailingSave(_StubService):
+        saves = 0
+
+        async def save_message(self, **kwargs):
+            _FailingSave.saves += 1
+            if _FailingSave.saves == 2:  # 1st is the user message, 2nd the reply
+                raise RuntimeError("db is down")
+
+    monkeypatch.setattr(app_module, "flow", _StubFlow([]))
+    app.dependency_overrides[deps.get_service] = lambda: _FailingSave()
+    try:
+        response = client.post(
+            "/stream/conversation",
+            json={"conversation": "hi"},
+            headers={"x-api-key": "test-token"},
+        )
+    finally:
+        app.dependency_overrides[deps.get_service] = lambda: _StubService()
+
+    assert response.status_code == 200
+    assert _sse_events(response.text)["done"]["conversation"] == "answer"
+    assert "Could not save the reply" in caplog.text
+    assert "db is down" in caplog.text  # the traceback is logged

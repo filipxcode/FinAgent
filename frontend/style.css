@@ -116,31 +116,6 @@ body {
     color: var(--text-primary);
 }
 
-.chat-item-delete {
-    flex-shrink: 0;
-    width: 26px;
-    height: 26px;
-    margin-right: 6px;
-    background: none;
-    border: none;
-    border-radius: 6px;
-    color: var(--text-secondary);
-    font-size: 0.75rem;
-    cursor: pointer;
-    opacity: 0;
-    transition: opacity 0.15s ease;
-}
-
-.chat-item:hover .chat-item-delete,
-.chat-item:focus-within .chat-item-delete {
-    opacity: 1;
-}
-
-.chat-item-delete:hover {
-    color: #f87171;
-    background-color: var(--border);
-}
-
 /* Older messages of the open chat */
 .load-older {
     align-self: center;

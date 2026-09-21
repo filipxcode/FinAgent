@@ -86,9 +86,15 @@ async def run_conversation(
         reply = _FALLBACK_REPLY
     finally:
         if reply is not None:
-            await service.save_message(
-                conversation_id=conversation_id, role="assistant", content=reply
-            )
+            # The reply already exists; failing to store it must not cut the stream.
+            try:
+                await service.save_message(
+                    conversation_id=conversation_id, role="assistant", content=reply
+                )
+            except Exception:
+                logger.exception(
+                    "Could not save the reply conversation_id=%s", conversation_id
+                )
 
     yield ConversationResult(
         conversation_id=conversation_id,

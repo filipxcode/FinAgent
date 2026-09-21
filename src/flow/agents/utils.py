@@ -68,8 +68,7 @@ def parse_coin(raw: dict[str, Any]) -> CoinTicker:
 WEI_PER_ETH = 1e18
 SATOSHI_PER_BTC = 1e8
 
-# Descriptive enum values keep the tool schema readable; these are the provider
-# ids they translate to on the wire.
+# Descriptive enum values keep the tool schema readable
 METRIC_CODE: dict[WhaleMetric, str] = {
     WhaleMetric.EXCHANGE_INFLOW_USD: "FlowInExUSD",
     WhaleMetric.EXCHANGE_OUTFLOW_USD: "FlowOutExUSD",
