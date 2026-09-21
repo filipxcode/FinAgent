@@ -11,6 +11,8 @@ from typing import Any
 
 import feedparser
 import httpx
+from pydantic_ai.agent import AgentRunResult
+from pydantic_ai.messages import ToolReturnPart
 
 from src.config.config import get_settings
 from src.flow.agents.http import get_json
@@ -20,6 +22,8 @@ from src.flow.agents.types import (
     FeedOut,
     MetricBucket,
     MetricTrend,
+    TavilyResult,
+    TavilySearchResponse,
     WalletAccount,
     WalletLookup,
     WalletTx,
@@ -27,16 +31,6 @@ from src.flow.agents.types import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-# --- orchestrator ---
-
-
-def add_sources(known: list[str], sources: list[str]) -> None:
-    """Keep the links a specialist cited (not tool names it may list), once each."""
-    for source in sources:
-        if source.startswith(("http://", "https://")) and source not in known:
-            known.append(source)
 
 
 # --- researcher ---
@@ -63,13 +57,32 @@ def parse_coin(raw: dict[str, Any]) -> CoinTicker:
     )
 
 
+def tavily_urls(run: AgentRunResult[Any]) -> list[str]:
+    """URLs of the pages Tavily returned during a run, in order, without repeats."""
+    urls: dict[str, None] = {}
+    for message in run.all_messages():
+        for part in getattr(message, "parts", ()):
+            if not (isinstance(part, ToolReturnPart) and part.tool_name == "tavily_search"):
+                continue
+            content = part.content
+            results = (
+                content.results
+                if isinstance(content, TavilySearchResponse)
+                else (content or {}).get("results", [])
+            )
+            for result in results:
+                url = result.url if isinstance(result, TavilyResult) else result.get("url")
+                if url:
+                    urls.setdefault(url)
+    return list(urls)
+
+
 # --- whale tracker ---
 
 WEI_PER_ETH = 1e18
 SATOSHI_PER_BTC = 1e8
 
-# Descriptive enum values keep the tool schema readable; these are the provider
-# ids they translate to on the wire.
+# Descriptive enum values keep the tool schema readable
 METRIC_CODE: dict[WhaleMetric, str] = {
     WhaleMetric.EXCHANGE_INFLOW_USD: "FlowInExUSD",
     WhaleMetric.EXCHANGE_OUTFLOW_USD: "FlowOutExUSD",
