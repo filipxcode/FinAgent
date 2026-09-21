@@ -4,7 +4,7 @@
 
 > A fast, multi-agent assistant that turns one crypto question into a sourced answer with market, on-chain, and macro context.
 
-![FinAgent demo placeholder](./docs/assets/finagent-demo.gif)
+![FinAgent demo placeholder](https://placehold.co/1200x675?text=FinAgent+Demo+GIF)
 
 > **Demo placeholder:** replace with a real product GIF (chat input → delegated analysis → final answer with sources).
 
@@ -103,12 +103,9 @@ Create `.env` in project root:
 ```env
 API_KEY=your-local-api-key
 OPENAI_API_KEY=your-openai-key
-DB_HOST=localhost
-DB_PORT=5432
-DB_DATABASE=finagent
-DB_USER=postgres
-DB_PASSWORD=postgres
 ```
+
+Optional DB overrides (defaults are already set in app config): `HOST`, `PORT`, `DATABASE`, `USER`, `PASSWORD`.
 
 ### 3) Install
 
