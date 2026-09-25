@@ -26,6 +26,14 @@ services:
       retries: 5
     ports:
       - "5432:5432"
-
+  
+  frontend:
+    image: nginx:alpine
+    ports:
+      - "5000:80"
+    volumes:
+      - ./frontend:/usr/share/nginx/html:ro
+    depends_on:
+      - web
 volumes:
   pgdata:
