@@ -39,6 +39,21 @@ def add_sources(known: list[str], sources: list[str]) -> None:
             known.append(source)
 
 
+def record_failure(
+    analytics_params: dict[str, Any], agent_name: str, task: str, reason: str, error: Exception
+) -> None:
+    """Log a specialist that failed its task and keep it in the turn's analytics."""
+    logger.warning("Specialist %s failed on task %r: %s", agent_name, task, error)
+    analytics_params.setdefault("delegations", []).append(
+        {
+            "agent": agent_name,
+            "task": task,
+            "orchestrator_reason": reason,
+            "error": str(error),
+        }
+    )
+
+
 # --- researcher ---
 
 

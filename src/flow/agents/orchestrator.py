@@ -6,13 +6,14 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 from pydantic_ai import RunContext
+from pydantic_ai.exceptions import UnexpectedModelBehavior
 
 from src.config.config import get_settings
 from src.flow.agents.prompt import current_date
 from src.flow.agents.researcher import ResearcherAgentOutput, ResearcherDeps
 from src.flow.agents.researcher import agent as researcher_agent
 from src.flow.agents.usage import run_cost
-from src.flow.agents.utils import add_sources
+from src.flow.agents.utils import add_sources, record_failure
 from src.flow.agents.whale_tracker import WhaleTrackerAgentOutput, WhaleTrackerDeps
 from src.flow.agents.whale_tracker import agent as whale_tracker_agent
 from src.flow.agents.news_agent import NewsAgentOutput, NewsAgentDeps
@@ -27,6 +28,12 @@ from src.flow.types import (
     NodeRunResult,
 )
 from src.flow.events import delegation
+
+
+_SPECIALIST_FAILED_REPORT = (
+    "This specialist could not complete the task, so there are no findings for "
+    "it. Treat the topic as missing information."
+)
 
 
 class OrchestratorInput(BaseModel):
@@ -57,7 +64,10 @@ class OrchestratorAgentOutput(BaseModel):
             Summarize all used tool results using the gathered knowledge, keeping
             every detail that matters to the user's question. Do not alter any
             information - treat what the specialists returned as ground truth,
-            including their dates and figures. Leave out anything the user did
+            including their dates and figures. Keep every qualifier that
+            changes the meaning of a finding exactly as the specialist stated
+            it: who acted, what kind of act or measurement it is, its direction,
+            its status and the period it covers. Leave out anything the user did
             not ask about, and never name technical errors, tools or agents here.
             'None' when no tool was used (small talk or a purely conversational
             answer).
@@ -204,12 +214,16 @@ async def delegate_research(
     Returns the report with its sources and a 0-1 confidence. Low confidence
     means the evidence was thin — say so rather than presenting it as settled.
     """
-    with delegation("researcher", task):
-        run = await researcher_agent.run(
-            task,
-            deps=ResearcherDeps(language=ctx.deps.language, background=background),
-            usage=ctx.usage,
-        )
+    try:
+        with delegation("researcher", task):
+            run = await researcher_agent.run(
+                task,
+                deps=ResearcherDeps(language=ctx.deps.language, background=background),
+                usage=ctx.usage,
+            )
+    except UnexpectedModelBehavior as error:
+        record_failure(ctx.deps.analytics_params, "researcher", task, reason, error)
+        return ResearcherAgentOutput(reasoning=str(error), report=_SPECIALIST_FAILED_REPORT, confidence=0.0)
     add_sources(ctx.deps.sources, run.output.sources)
     ctx.deps.analytics_params.setdefault("delegations", []).append(
         {
@@ -250,12 +264,16 @@ async def delegate_whale_tracking(
     reading is normally yesterday's. Keep the returned 'latest_date' in your
     answer and never present the figures as intraday.
     """
-    with delegation("whale_tracker", task):
-        run = await whale_tracker_agent.run(
-            task,
-            deps=WhaleTrackerDeps(language=ctx.deps.language, background=background),
-            usage=ctx.usage,
-        )
+    try:
+        with delegation("whale_tracker", task):
+            run = await whale_tracker_agent.run(
+                task,
+                deps=WhaleTrackerDeps(language=ctx.deps.language, background=background),
+                usage=ctx.usage,
+            )
+    except UnexpectedModelBehavior as error:
+        record_failure(ctx.deps.analytics_params, "whale_tracker", task, reason, error)
+        return WhaleTrackerAgentOutput(reasoning=str(error), report=_SPECIALIST_FAILED_REPORT)
     ctx.deps.analytics_params.setdefault("delegations", []).append(
         {
             "agent": "whale_tracker",
@@ -292,12 +310,16 @@ async def news_feed(ctx: RunContext[OrchestratorDeps], task: str, reason: str) -
     means no relevant headline was found - say so rather than presenting it as
     settled.
     """
-    with delegation("news_agent", task):
-        run = await news_agent.run(
-            task,
-            deps=NewsAgentDeps(language=ctx.deps.language),
-            usage=ctx.usage
-        )
+    try:
+        with delegation("news_agent", task):
+            run = await news_agent.run(
+                task,
+                deps=NewsAgentDeps(language=ctx.deps.language),
+                usage=ctx.usage
+            )
+    except UnexpectedModelBehavior as error:
+        record_failure(ctx.deps.analytics_params, "news_agent", task, reason, error)
+        return NewsAgentOutput(reasoning=str(error), report=_SPECIALIST_FAILED_REPORT, confidence=0.0)
     add_sources(ctx.deps.sources, run.output.sources)
     ctx.deps.analytics_params.setdefault("delegations", []).append(
         {

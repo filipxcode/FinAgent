@@ -42,7 +42,8 @@ class AnswerAgentOutput(BaseModel):
     )
     report: str = Field(
         description=cleandoc("""
-            The final, polished report shown to the user. Ground every claim in
+            The final, report shown to the user, written in Markdown.
+            Ground every claim in
             task_result - keep its figures, dates, addresses and sources exactly
             as given, never add one that isn't already there. Weave in
             missing_informations and tool_limitations as natural caveats where
@@ -50,6 +51,11 @@ class AnswerAgentOutput(BaseModel):
             internal tools or agents. If task_result is "None" (small talk, no
             data gathered), keep this short and conversational instead of
             forcing structure onto it.
+            Formatting: one level-2 heading (##) per topic, short paragraphs or
+            hyphen bullets under it, bold for key figures, a table when comparing
+            assets or periods. Small talk stays plain text with no headings. End
+            with the last substantive section, never with a summary that repeats
+            the sections above.
         """),
     )
 
@@ -121,6 +127,13 @@ async def get_agent_instructions(ctx: RunContext[AnswerDeps]) -> str:
     - Use the conversation history only to match tone and avoid repeating what
       the user already knows - do not summarize the whole conversation.
     - Write in {language}.
+    - Format the answer in Markdown as described in the 'report' field.
+    - Keep every qualifier that changes the meaning of a finding exactly as
+      'task_result' states it: who acted, what kind of act or measurement it
+      is, its direction, its status and the period it covers. Do not shorten
+      a finding in a way that changes any of these.
+    - Be concrete: lead with the figures and findings, cut filler and generic
+      statements.
     """
     return cleandoc(prompt).format(
         current_date=current_date(),

@@ -45,6 +45,11 @@ class WhaleTrackerAgentOutput(BaseModel):
             value, and keep observation and interpretation apart - "inflows were
             2.4x their 30-day average" is an observation, "whales are about to
             sell" is a guess and must be marked as one.
+            Describe exchange flows by direction in plain words, never as a bare
+            "outflow" or "inflow": say whether coins were withdrawn from
+            exchanges or deposited to them, together with the usual reading of
+            that direction. Say whether each figure is one day (name the date)
+            or summed over the whole window (name its length).
         """),
     )
     latest_date: date | None = Field(
@@ -77,12 +82,7 @@ _DEFAULT_METRICS: list[WhaleMetric] = [
 
 @dataclass
 class WhaleTrackerDeps:
-    """Runtime parameters for one delegated whale-tracking task.
-
-    Deliberately carries no conversation history: the Orchestrator owns the
-    conversation and hands down a self-contained 'task' plus, when it actually
-    changes the answer, a short 'background' it wrote itself.
-    """
+    """Runtime parameters for one delegated whale-tracking task."""
 
     language: LanguageEnum = LanguageEnum.ENG
     background: str | None = None
@@ -129,10 +129,20 @@ async def get_agent_instructions(ctx: RunContext[WhaleTrackerDeps]) -> str:
       level: falling means accumulation, rising means growing sell-side supply.
     - The newest reading is a closed day, normally yesterday. Never present it
       as intraday, "right now", or "today so far". Always name the date.
+    - Call a tool only with argument values its schema allows. When the task
+      asks about an asset, period or metric the tools do not support, do not
+      call them for it: state that gap in the report and answer the rest.
     - If a tool returns a non-empty 'error' field, the data source failed. Do
       not retry blindly — state the gap and answer with what you reliably have.
     - Never fabricate figures, addresses or transaction hashes. Report only what
       a tool actually returned, with its date.
+    - Net exchange flow: negative means net withdrawal from exchanges
+      (accumulation), positive means net deposits to exchanges (sell-side
+      pressure). Your report is read by agents that never see the tools, and a
+      bare "outflow" gets misread as money leaving the market, so spell out the
+      direction and its usual reading in words.
+    - 'net_exchange_flow_usd_latest' is a single day, 'net_exchange_flow_usd_window'
+      is the sum over the whole lookback. Always say which one a figure is.
     - Distinguish observation from inference. "Exchange inflows were 2.4x their
       30-day average" is an observation; "whales are about to sell" is a guess.
       Give the observation first, and mark any interpretation as such.
@@ -206,9 +216,7 @@ async def coinmetrics_whale_flows(
     R"""Detect what large holders are doing with their coins, chain-wide.
 
     Answers questions like "are whales moving right now", "is anything unusual
-    happening on-chain", "are they accumulating or preparing to sell". It looks
-    at aggregate flows across the whole chain, not at individual wallets — use
-    'wallet_activity' when a specific address is already known.
+    happening on-chain", "are they accumulating or preparing to sell". 
 
     How to read the result. Every metric comes back as its newest daily value
     plus statistics against the baseline window. 'zscore' is the judgement call:

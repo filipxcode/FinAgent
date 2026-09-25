@@ -63,11 +63,6 @@ class Flow:
     ) -> AsyncIterator[FlowStepResult]:
         """precheck -> small_talk / not_allowed => stop here
                      -> allowed                  => orchestrator
-
-        No retry loop here - transient failures are retried on the HTTP
-        transport each agent's model client uses (see config.Settings.get_agent).
-
-        Yields every step as it finishes - accumulating them is stream()'s job.
         """
         
         if len(message_history) >= _SUMMARIZE_TRIGGER:

@@ -33,9 +33,13 @@ class NewsAgentOutput(BaseModel):
     report: str = Field(
         description=cleandoc("""
             Concise, factual synthesis that answers the task. Give every
-            headline its date and source. State observations before any
-            interpretation, and name the gap outright when no relevant news
-            was found.
+            headline its date and source. For every item state who acted, what
+            they did, what kind of act it is and its current status, in the
+            source's own terms. Keep different kinds of acts distinct and never
+            credit one institution with another's act or with the law, rule or
+            decision it only refers to. State observations before any
+            interpretation, mark interpretation as such, and name the gap
+            outright when no relevant news was found.
         """),
     )
     sources: list[str] = Field(
@@ -85,6 +89,12 @@ async def get_agent_instructions(ctx:RunContext[NewsAgentDeps]) -> str:
       headline that looks directly relevant, call 'extract_article' with its
       exact URL to read the full story before writing your report - do not
       guess at the content from the title alone.
+    - Before writing, check each item against its full text: who the actor
+      is, what kind of act it is, what stage it is at, and what other acts it
+      merely refers to. Describe the item itself, and mention anything it
+      refers to only as context.
+    - Say how old each item is relative to the current date, so older items
+      are not presented as fresh news.
     - Never fabricate headlines, dates or URLs. Only cite sources you actually
       retrieved. Put every URL you relied on into 'sources'.
     - If a tool returns a non-empty 'error' field, note the gap, lower your
