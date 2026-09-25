@@ -136,7 +136,17 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (chat.id !== currentConversationId) openChat(chat.id);
             });
 
-            item.appendChild(open);
+            const remove = document.createElement('button');
+            remove.type = 'button';
+            remove.className = 'chat-item-delete';
+            remove.textContent = '✕';
+            remove.title = 'Delete chat';
+            remove.setAttribute('aria-label', `Delete chat: ${chat.title}`);
+            // The server still saves the reply of a running turn, which would bring the chat back.
+            remove.disabled = Boolean(activeStream) && chat.id === currentConversationId;
+            remove.addEventListener('click', () => deleteChat(chat, remove));
+
+            item.append(open, remove);
             chatList.appendChild(item);
         }
 
@@ -194,6 +204,36 @@ document.addEventListener('DOMContentLoaded', () => {
             if (seq !== viewSeq) return;
             chatHistory.replaceChildren(buildMessage('system', `Could not load this chat: ${error.message}`));
         }
+    }
+
+    async function deleteChat(chat, button) {
+        if (!apiKeyInput.value.trim()) {
+            alert('Please enter your API Key in the sidebar first.');
+            apiKeyInput.focus();
+            return;
+        }
+        if (!confirm(`Delete "${chat.title}"? This cannot be undone.`)) return;
+
+        button.disabled = true;
+        try {
+            const response = await fetch(`${API_BASE}/conversations/${encodeURIComponent(chat.id)}`, {
+                method: 'DELETE',
+                headers: { 'x-api-key': apiKeyInput.value.trim() },
+            });
+            // 404: already gone, which is what the user asked for.
+            if (!response.ok && response.status !== 404) {
+                const body = await response.json().catch(() => ({}));
+                throw new Error(body.detail || body.error || `Server error: ${response.status}`);
+            }
+        } catch (error) {
+            button.disabled = false;
+            alert(`Could not delete the chat: ${error.message}`);
+            return;
+        }
+
+        chats = chats.filter((c) => c.id !== chat.id);
+        if (chat.id === currentConversationId) showNewChat();
+        else renderChatList();
     }
 
     async function apiGet(path, params) {
@@ -702,6 +742,7 @@ document.addEventListener('DOMContentLoaded', () => {
         } finally {
             if (activeStream === controller) activeStream = null;
             setBusy(false);
+            renderChatList(); // re-enables deleting the chat this turn ran in
         }
     });
 

@@ -116,6 +116,43 @@ body {
     color: var(--text-primary);
 }
 
+.chat-item-delete {
+    flex-shrink: 0;
+    width: 28px;
+    height: 28px;
+    margin-right: 4px;
+    padding: 0;
+    background: none;
+    border: none;
+    border-radius: 6px;
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.15s ease, color 0.15s ease, background-color 0.15s ease;
+}
+
+.chat-item:hover .chat-item-delete,
+.chat-item:focus-within .chat-item-delete {
+    opacity: 1;
+}
+
+.chat-item-delete:hover:not(:disabled) {
+    color: #f87171;
+    background-color: rgba(248, 113, 113, 0.12);
+}
+
+.chat-item-delete:disabled {
+    cursor: not-allowed;
+    opacity: 0 !important;
+}
+
+@media (hover: none) {
+    .chat-item-delete {
+        opacity: 1;
+    }
+}
+
 /* Older messages of the open chat */
 .load-older {
     align-self: center;
