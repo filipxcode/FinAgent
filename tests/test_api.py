@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 from src.api import app as app_module
 from src.api import deps
 from src.api.app import app
+from src.db.postgres import DatabaseUnavailableError
 from src.flow.types import BasicMessage, FlowRunResult, NodeOutput
 
 
@@ -21,6 +22,9 @@ class _StubService:
     async def get_conversations(self, **kwargs):
         _StubService.conversations_kwargs = kwargs
         return _StubService.conversations
+
+    async def delete_conversation(self, *, conversation_id):
+        return conversation_id == "exists"
 
 
 app.dependency_overrides[deps.get_service] = lambda: _StubService()
@@ -143,7 +147,7 @@ def test_stream_still_ends_with_done_when_saving_the_reply_fails(monkeypatch, ca
 
         async def save_message(self, **kwargs):
             _FailingSave.saves += 1
-            if _FailingSave.saves == 2:  # 1st is the user message, 2nd the reply
+            if _FailingSave.saves == 2:  
                 raise RuntimeError("db is down")
 
     monkeypatch.setattr(app_module, "flow", _StubFlow([]))
@@ -160,4 +164,4 @@ def test_stream_still_ends_with_done_when_saving_the_reply_fails(monkeypatch, ca
     assert response.status_code == 200
     assert _sse_events(response.text)["done"]["conversation"] == "answer"
     assert "Could not save the reply" in caplog.text
-    assert "db is down" in caplog.text  # the traceback is logged
+    assert "db is down" in caplog.text  
