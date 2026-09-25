@@ -7,7 +7,8 @@ from datetime import datetime
 from functools import lru_cache
 from typing import Any
 
-from sqlalchemy import DateTime, String, Text, func, select
+from sqlalchemy import DateTime, String, Text, delete, func, select
+from sqlalchemy.exc import InterfaceError, OperationalError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -17,6 +18,11 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from src.config.config import DatabaseSettings, get_settings
+
+
+class DatabaseUnavailableError(RuntimeError):
+    """Postgres could not be reached: down, host not resolvable, connection dropped."""
+_UNREACHABLE_ERRORS = (OperationalError, InterfaceError, OSError)
 
 
 class Base(DeclarativeBase):
@@ -71,7 +77,11 @@ class PostgresClient:
             expire_on_commit=False,
             class_=AsyncSession,
         )
-        await self.ensure_schema()
+        try:
+            await self.ensure_schema()
+        except _UNREACHABLE_ERRORS as exc:
+            await self.close()
+            raise DatabaseUnavailableError(str(exc)) from exc
 
     async def close(self) -> None:
         if self._engine is None:
@@ -89,7 +99,10 @@ class PostgresClient:
     async def session(self) -> AsyncIterator[AsyncSession]:
         session_maker = self._require_session_maker()
         async with session_maker() as session:
-            yield session
+            try:
+                yield session
+            except _UNREACHABLE_ERRORS as exc:
+                raise DatabaseUnavailableError(str(exc)) from exc
 
     def _require_engine(self) -> AsyncEngine:
         if self._engine is None:
@@ -201,6 +214,15 @@ class ConversationService:
             }
             for row in rows
         ]
+
+    async def delete_conversation(self, *, conversation_id: str) -> bool:
+        stmt = delete(ConversationMessageRow).where(
+            ConversationMessageRow.conversation_id == conversation_id
+        )
+        async with self.db.session() as session:
+            result = await session.execute(stmt)
+            await session.commit()
+        return result.rowcount > 0
 
 
 def _title(first_message: str | None, max_length: int = 80) -> str:

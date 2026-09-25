@@ -10,8 +10,9 @@ load_dotenv()
 
 from datetime import datetime
 
-from fastapi import Depends, FastAPI, Query, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -27,7 +28,7 @@ from src.api.types import (
     HistoryResponse,
 )
 from src.config.config import Settings
-from src.db.postgres import ConversationService
+from src.db.postgres import ConversationService, DatabaseUnavailableError
 from src.flow.types import BasicMessage
 from src.service.conversation import ConversationResult, run_conversation
 
@@ -57,6 +58,15 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+@app.exception_handler(DatabaseUnavailableError)
+async def database_unavailable(request: Request, exc: DatabaseUnavailableError) -> JSONResponse:
+    logger.error("Database unavailable on %s %s", request.method, request.url.path, exc_info=exc)
+    return JSONResponse(
+        status_code=503, content={"detail": "Database unavailable, try again later"}
+    )
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -167,6 +177,18 @@ async def conversations(
     summaries = [ConversationSummary(**row) for row in rows]
     next_cursor = summaries[-1].updated_at if len(summaries) == limit else None
     return ConversationListResponse(conversations=summaries, next_cursor=next_cursor)
+
+
+@app.delete("/conversations/{conversation_id}", status_code=204)
+async def delete_conversation(
+    auth_token: Annotated[str, Depends(get_auth_token)],
+    service: Annotated[ConversationService, Depends(get_service)],
+    conversation_id: ConversationIdFieldT,
+) -> Response:
+    _ = auth_token
+    if not await service.delete_conversation(conversation_id=conversation_id):
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return Response(status_code=204)
 
 
 if __name__ == "__main__":
