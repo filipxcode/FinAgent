@@ -424,7 +424,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const contentDiv = document.createElement('div');
         contentDiv.className = 'msg-content';
-        contentDiv.textContent = content;
+        contentDiv.appendChild(role === 'assistant' ? renderMarkdown(content) : document.createTextNode(content));
         msgDiv.appendChild(contentDiv);
 
         const sourcesEl = buildSources(sources);
@@ -434,6 +434,26 @@ document.addEventListener('DOMContentLoaded', () => {
             contentDiv.appendChild(buildTrace(steps));
         }
         return msgDiv;
+    }
+
+    /* Answers are markdown and quote the web, so the HTML is sanitised before it
+       touches the DOM. Without the CDN libraries the text is shown as-is. */
+    function renderMarkdown(text) {
+        const body = document.createElement('div');
+        body.className = 'markdown';
+        if (!window.marked || !window.DOMPurify) {
+            body.classList.add('plain');
+            body.textContent = text;
+            return body;
+        }
+        const html = marked.parse(text, { gfm: true, breaks: true });
+        // No images: an answer has no use for them and a remote one would ping its host on every view.
+        body.appendChild(DOMPurify.sanitize(html, { RETURN_DOM_FRAGMENT: true, FORBID_TAGS: ['img'] }));
+        for (const link of body.querySelectorAll('a[href]')) {
+            link.target = '_blank';
+            link.rel = 'noopener noreferrer';
+        }
+        return body;
     }
 
     function appendMessage(role, content, steps, sources) {
