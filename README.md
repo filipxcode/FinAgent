@@ -1,82 +1,135 @@
 # FinAgent — AI Crypto & Macro Research Assistant
 
-## 1) See it in action
+FinAgent is an API-first, multi-agent assistant for crypto and financial research. It turns a single user question into a sourced answer by combining market data, on-chain activity, macro news, and conversation context.
 
-> A fast, multi-agent assistant that turns one crypto question into a sourced answer with market, on-chain, and macro context.
+The core of the project is the backend flow: an asynchronous orchestration pipeline runs the required agents, persists the conversation, and can expose progress in real time through Server-Sent Events (SSE).
 
-![FinAgent demo placeholder](https://placehold.co/1200x675?text=FinAgent+Demo+GIF)
-
-> **Demo placeholder:** replace with a real product GIF (chat input → delegated analysis → final answer with sources).
-
----
-
-## Why FinAgent
-
-FinAgent is an API-first, production-oriented assistant for crypto and financial research.  
-It combines specialized agents (market research, whale tracking, macro news) under one orchestrator, then returns a single user-friendly answer with references.
-
-## End-to-end flow (E2E)
+## End-to-end flow
 
 ```mermaid
 flowchart TD
-    A[Client: /conversation or /stream/conversation] --> B[FastAPI + Auth + Rate Limit]
-    B --> C[Persist user message in Postgres]
-    C --> D[Flow Engine]
+    A[Client] -->|POST /conversation<br/>or /stream/conversation| B[FastAPI API]
+    B --> C[Auth + rate limit]
+    C --> D[Persist user message<br/>load conversation history]
+    D --> E[Flow execution]
 
-    D --> E[Precheck Node]
-    E -->|small talk / not allowed| H[Answer Node]
-    E -->|allowed| F[Orchestrator Node]
+    E --> F[Precheck node]
+    F -->|small talk / not allowed| G[Direct answer]
+    F -->|allowed research request| H[Orchestrator node]
 
-    F --> F1[delegate_research]
-    F --> F2[delegate_whale_tracking]
-    F --> F3[news_feed]
+    H --> I[delegate_research]
+    H --> J[delegate_whale_tracking]
+    H --> K[news_feed]
 
-    F1 --> G[Specialized agent outputs]
-    F2 --> G
-    F3 --> G
+    I --> L[Specialized agent results]
+    J --> L
+    K --> L
+    L --> M[Answer node]
+    G --> N[Persist assistant message]
+    M --> N
 
-    G --> H[Answer Node: final user-facing response]
-    H --> I[Persist assistant message]
-    I --> J[HTTP JSON response or SSE events + done]
+    N --> O{Response mode}
+    O -->|standard endpoint| P[JSON response]
+    O -->|stream endpoint| Q[SSE events]
+    Q --> R[step / delegation updates]
+    Q --> S[terminal done event]
 ```
 
-### Flow explanation (quick)
-1. Request enters FastAPI (`/conversation` or `/stream/conversation`).
-2. Message is saved and recent history is loaded.
-3. **Precheck** classifies intent/language and can stop early for non-task content.
-4. **Orchestrator** decides whether to answer directly or delegate to specialist tools.
-5. Specialist outputs are merged into one grounded summary.
-6. **Answer** formats the final response for the user.
-7. Assistant message is stored; API returns JSON or streamed SSE events.
+### What happens during a request
 
-## What each tool gives you
+1. The API authenticates the request and applies the conversation rate limit.
+2. The user message is stored in PostgreSQL and the recent conversation history is loaded.
+3. The **precheck node** classifies the request, detects the language, and decides whether it is an allowed research task, small talk, or an unsupported request.
+4. Allowed research requests are passed to the **orchestrator**, which decides which specialist agents are needed.
+5. Specialist agents collect and structure the relevant evidence: market metrics, web research, whale/on-chain activity, or macro-regulatory news.
+6. The **answer node** combines the results into one user-facing response with sources.
+7. The assistant message and execution result are persisted. The caller receives either one JSON response or a live SSE stream.
+
+## Async event queue and SSE
+
+The flow is implemented as a producer/consumer pipeline so that the same execution can support both synchronous JSON responses and live progress updates.
+
+### Async queue
+
+For every flow execution, FinAgent creates an `asyncio.Queue`:
+
+- the **producer task** runs the flow and publishes events as nodes and delegations start, finish, or fail;
+- the **consumer** waits on `queue.get()` and yields events as soon as they are available;
+- `ContextVar`-based queue binding keeps events emitted by the current flow execution isolated from other concurrent conversations;
+- a dedicated `DONE` sentinel marks the end of the producer stream;
+- after the sentinel is received, the flow assembles the final `FlowRunResult` with timing, costs, analytics, and sources.
+
+This keeps long-running agent work decoupled from response delivery. A node does not need to know whether its events will ultimately be returned as JSON or sent to a connected stream.
+
+Conceptually:
+
+```text
+flow execution (producer)
+        │
+        ├─ publish(step started)
+        ├─ publish(delegation started / finished / failed)
+        ├─ publish(step finished)
+        └─ publish(DONE)
+                │
+                ▼
+        asyncio.Queue (per request)
+                │
+                ▼
+response consumer (async iterator)
+        ├─ collect events for the final result
+        └─ optionally serialize them as SSE
+```
+
+### Server-Sent Events
+
+The `/stream/conversation` endpoints expose the flow as `text/event-stream`. The API consumes the same async iterator used by the standard conversation endpoint and maps intermediate flow events to SSE messages.
+
+A streaming request can therefore report progress such as:
+
+- a flow step starting or finishing;
+- a delegated research, whale-tracking, or news task changing status;
+- errors from a failed delegation;
+- the final answer and a terminal completion event.
+
+SSE is one-way: the client opens one HTTP connection, while the server writes events to it as the queue produces them. The stream also supports keep-alive comments, and the request can be cancelled if the client disconnects. Authentication and rate-limit failures are returned as regular JSON errors before the stream begins.
+
+Use `/conversation` when the caller only needs the completed result. Use `/stream/conversation` when progress visibility matters or when the analysis may take long enough that waiting for a single response would provide poor feedback.
+
+## Agents and tools
 
 ### Orchestrator tools
-- **`delegate_research`** → broad web/market research when fresh external evidence is needed.
-- **`delegate_whale_tracking`** → on-chain whale behavior, exchange flows, wallet-level activity.
-- **`news_feed`** → official Fed/SEC macro-regulatory updates.
 
-### Research Agent tools
-- **`base_crypto_tool`** → market snapshot (top coins, cap, volume, BTC dominance).
-- **`exact_crypto_tool`** → detailed metrics for one selected coin.
-- **`fear_greed_index_tool`** → market sentiment index (Fear & Greed).
-- **`tavily_search`** → current web context and supporting sources.
+- **`delegate_research`** — broad web and market research when fresh external evidence is needed.
+- **`delegate_whale_tracking`** — chain-wide whale behavior, exchange flows, and wallet activity.
+- **`news_feed`** — filtered macro and regulatory news, including Federal Reserve and SEC updates.
 
-### Whale Tracker tools
-- **`coinmetrics_whale_flows`** → chain-level whale flow signals (inflow/outflow, z-score trends).
-- **`wallet_activity`** → holdings and recent transactions for known wallet addresses.
+### Research agent tools
 
-### News Agent tools
-- **`get_macro_news`** → filtered latest Fed + SEC headlines.
-- **`extract_article`** → full-article extraction for relevant headlines.
+- **`base_crypto_tool`** — market snapshot for major assets, including price, volume, market cap, and BTC dominance.
+- **`exact_crypto_tool`** — detailed metrics for a selected asset.
+- **`fear_greed_index_tool`** — market sentiment indicator.
+- **`tavily_search`** — current web context and supporting sources.
+
+### Whale tracker tools
+
+- **`coinmetrics_whale_flows`** — exchange flows and chain-level activity compared with a historical baseline.
+- **`wallet_activity`** — balances and recent transactions for known wallets, with bounded concurrent lookups.
+
+### News agent tools
+
+- **`get_macro_news`** — filtered Federal Reserve and SEC headlines.
+- **`extract_article`** — article extraction for relevant headlines.
 
 ## Architecture at a glance
 
-- **Backend:** FastAPI + SSE
+- **API:** FastAPI with standard JSON and SSE endpoints
+- **Flow execution:** asynchronous node pipeline with per-request `asyncio.Queue`
 - **Agent framework:** `pydantic-ai`
-- **Database:** PostgreSQL + SQLAlchemy (async)
-- **HTTP resilience:** retry-enabled transport (`tenacity`)
-- **Frontend:** lightweight static chat UI (`frontend/`)
+- **Database:** PostgreSQL with SQLAlchemy and `asyncpg`
+- **Reliability:** rate limiting, retries via `tenacity`, health checks, and structured execution analytics
+- **External data:** market APIs, CoinMetrics, Blockscout, mempool.space, RSS feeds, and web search
+
+The frontend is intentionally not part of the main architecture description: it is only one possible client of the API. Any HTTP client that can send the API key and consume JSON or `text/event-stream` can use FinAgent.
 
 ## API surface
 
@@ -88,55 +141,56 @@ flowchart TD
 - `GET /history`
 - `GET /conversations`
 
-Auth: send `x-api-key` header.
+Send the API key in the `x-api-key` header. Streaming endpoints accept JSON request bodies and return `text/event-stream` responses.
 
 ## Quick start
 
-### 1) Requirements
+### Requirements
+
 - Python 3.12+
 - `uv`
-- PostgreSQL (or Docker Compose)
+- PostgreSQL, or Docker Compose
 
-### 2) Environment
-Create `.env` in project root:
+### Environment
+
+Create `.env` in the project root:
 
 ```env
 API_KEY=your-local-api-key
 OPENAI_API_KEY=your-openai-key
 ```
 
-Optional DB overrides (defaults are already set in app config): `HOST`, `PORT`, `DATABASE`, `USER`, `PASSWORD`.
+Optional database overrides are available through `HOST`, `PORT`, `DATABASE`, `USER`, and `PASSWORD`.
 
-### 3) Install
+### Install
 
 ```bash
 uv sync --locked
 ```
 
-### 4) Run with Docker Compose
+### Run with Docker Compose
 
 ```bash
 docker compose up --build
 ```
 
-### 5) Or run API locally
+### Or run the API locally
 
 ```bash
 uv run uvicorn src.api.app:app --host 0.0.0.0 --port 9000
 ```
 
-## Run tests
+### Run tests
 
 ```bash
 API_KEY=test-token OPENAI_API_KEY=sk-test-placeholder uv run pytest tests/ -v
 ```
 
----
-
-## Recruiter-focused highlights
+## Project strengths
 
 - Multi-agent orchestration with explicit delegation roles
-- Structured outputs and source-aware responses
-- Real-time streaming support (SSE)
-- Conversation persistence + pagination
-- Production-minded reliability (rate limiting, retries, health endpoint)
+- Asynchronous event pipeline that separates flow execution from response delivery
+- Real-time SSE progress reporting for long-running research
+- Structured outputs, source-aware answers, and execution analytics
+- Conversation persistence with history and pagination
+- Production-minded controls: authentication, rate limiting, retries, and health checks
