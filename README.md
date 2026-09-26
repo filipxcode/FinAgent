@@ -6,9 +6,9 @@ The core of the project is the backend flow: an asynchronous orchestration pipel
 
 ## Sample video
 
-<video src="assets/project_fin.mp4" controls muted width="100%"></video>
+<video src="https://github.com/user-attachments/assets/8572f33e-36e4-4846-b11d-8b09a1999a64" controls muted width="100%"></video>
 
-If the player does not load, [download or open the recording directly](assets/project_fin.mp4).
+If the player does not load, [download or open the recording directly](https://github.com/user-attachments/assets/8572f33e-36e4-4846-b11d-8b09a1999a64).
 
 ## End-to-end flow
 
