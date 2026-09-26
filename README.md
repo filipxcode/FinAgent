@@ -4,6 +4,12 @@ FinAgent is an API-first, multi-agent assistant for crypto and financial researc
 
 The core of the project is the backend flow: an asynchronous orchestration pipeline runs the required agents, persists the conversation, and can expose progress in real time through Server-Sent Events (SSE).
 
+## Sample video
+
+<video src="assets/project_fin.mp4" controls muted width="100%"></video>
+
+If the player does not load, [download or open the recording directly](assets/project_fin.mp4).
+
 ## End-to-end flow
 
 ```mermaid
@@ -51,45 +57,40 @@ The flow is implemented as a producer/consumer pipeline so that the same executi
 
 ### Async queue
 
-For every flow execution, FinAgent creates an `asyncio.Queue`:
+**Why it exists:** a research request can take a while, and the client should see progress as it happens, not only the final answer. The queue lets the agents report what they are doing without knowing who is listening.
 
-- the **producer task** runs the flow and publishes events as nodes and delegations start, finish, or fail;
-- the **consumer** waits on `queue.get()` and yields events as soon as they are available;
-- `ContextVar`-based queue binding keeps events emitted by the current flow execution isolated from other concurrent conversations;
-- a dedicated `DONE` sentinel marks the end of the producer stream;
-- after the sentinel is received, the flow assembles the final `FlowRunResult` with timing, costs, analytics, and sources.
+**How it works:** each request gets its own `asyncio.Queue` with two sides:
 
-This keeps long-running agent work decoupled from response delivery. A node does not need to know whether its events will ultimately be returned as JSON or sent to a connected stream.
+- **Producer**: a background task that runs the flow. Nodes and agents call `publish(event)` whenever something happens.
+- **Consumer**: reads events from the queue as they arrive and passes them on. `/stream/conversation` sends them to the client as SSE; `/conversation` just waits for the final result.
 
-Conceptually:
+**What is what:**
+
+| Element | Role |
+|---|---|
+| `asyncio.Queue` | per request buffer between the running flow and the response |
+| `publish()` | puts an event on the queue from anywhere in the flow |
+| `ContextVar` | remembers which queue belongs to the current request, so parallel conversations never mix events |
+| `step.started` / `step.finished` | a flow node (precheck, orchestrator, answer) began or ended |
+| `delegation` | a specialist agent started, finished, or failed |
+| `DONE` | marks the end of the stream, sent even if the flow fails |
 
 ```text
-flow execution (producer)
-        │
-        ├─ publish(step started)
-        ├─ publish(delegation started / finished / failed)
-        ├─ publish(step finished)
-        └─ publish(DONE)
-                │
-                ▼
-        asyncio.Queue (per request)
-                │
-                ▼
-response consumer (async iterator)
-        ├─ collect events for the final result
-        └─ optionally serialize them as SSE
+flow (producer) ──publish()──▶ asyncio.Queue ──▶ consumer ──▶ JSON or SSE
 ```
+
+When the stream ends, the consumer builds the final result (answer, sources, timing, cost). If the client disconnects early, the running flow is cancelled.
 
 ### Server-Sent Events
 
 The `/stream/conversation` endpoints expose the flow as `text/event-stream`. The API consumes the same async iterator used by the standard conversation endpoint and maps intermediate flow events to SSE messages.
 
-A streaming request can therefore report progress such as:
+Each queue event becomes one SSE message whose `event:` field is the event type:
 
-- a flow step starting or finishing;
-- a delegated research, whale-tracking, or news task changing status;
-- errors from a failed delegation;
-- the final answer and a terminal completion event.
+- `step.started` / `step.finished`: a flow node starting or finishing;
+- `delegation`: a research, whale-tracking, or news task changing status (`started`, `finished`, `failed`);
+- `done`: the final answer with `conversation_id`, `status`, and `sources` (last message of the stream);
+- `error`: sent instead of `done` when the turn failed; its data has the same shape and carries the fallback reply.
 
 SSE is one-way: the client opens one HTTP connection, while the server writes events to it as the queue produces them. The stream also supports keep-alive comments, and the request can be cancelled if the client disconnects. Authentication and rate-limit failures are returned as regular JSON errors before the stream begins.
 
